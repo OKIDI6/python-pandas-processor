@@ -106,7 +106,7 @@ class LedgerManager:
 
     def load_income(self) -> pd.DataFrame:
         try:
-            df = self.conn.read(worksheet="Income")
+            df = self.conn.read(worksheet="Income", ttl=60)
             for col in ["Expected_USD", "Received_USDT", "Pending_USD"]:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
@@ -116,7 +116,7 @@ class LedgerManager:
 
     def load_expenses(self) -> pd.DataFrame:
         try:
-            df = self.conn.read(worksheet="Expenses")
+            df = self.conn.read(worksheet="Expenses", ttl=60)
             df["Amount_UGX"] = pd.to_numeric(df.get("Amount_UGX", 0), errors="coerce").fillna(0.0)
             return df
         except Exception:
@@ -124,7 +124,7 @@ class LedgerManager:
 
     def load_savings(self, ugx_rate: float = 3680.0) -> pd.DataFrame:
         try:
-            df = self.conn.read(worksheet="Savings")
+            df = self.conn.read(worksheet="Savings", ttl=60)
             for col in ["Amount_USDT", "Amount_UGX"]:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)

@@ -12,3 +12,7 @@ advisor_state.json
 *.csv
 *.jsonl
 
+
+*.json
+update_accounting.py
+

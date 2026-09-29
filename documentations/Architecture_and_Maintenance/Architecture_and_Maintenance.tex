@@ -1,0 +1,126 @@
+\documentclass[12pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage{geometry}
+\geometry{a4paper, margin=1in}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{graphicx}
+\usepackage{titlesec}
+\usepackage{tocloft}
+
+\definecolor{primary}{RGB}{15, 23, 42}
+\definecolor{accent}{RGB}{59, 130, 246}
+
+\titleformat{\section}{\Large\bfseries\color{primary}}{\thesection}{1em}{}[\titlerule]
+\titleformat{\subsection}{\large\bfseries\color{primary}}{\thesubsection}{1em}{}
+
+\title{
+    \vspace{2cm}
+    \textbf{\Huge Okidi Finance OS} \
+    \vspace{0.5cm}
+    \Large Architecture \& Maintenance Documentation \
+    \vspace{1cm}
+}
+\author{CazzyGames Technical Operations}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+\thispagestyle{empty}
+\newpage
+
+\tableofcontents
+\newpage
+
+\section{Introduction}
+This document serves as the official architecture, structural, and operational manual for the \textbf{Okidi Finance OS}. It is intended for technical reference to assist in future maintenance, scaling, and the integration of Artificial Intelligence modules.
+
+\section{System Architecture}
+The Okidi Finance OS is built as a lightweight, secure, and highly responsive web application. It operates on a decoupled architecture where data ingestion, data processing, and user interface rendering are isolated for maintainability.
+
+\subsection{Security \& Authentication Layer}
+\begin{itemize}
+    \item \textbf{Identity Provider:} Google OpenID Connect (OIDC).
+    \item \textbf{Mechanism:} The application utilizes Streamlit's native \texttt{st.login} provider integration configured via \texttt{authlib}.
+    \item \textbf{Access Control:} Only whitelisted email addresses (specifically the owner) are permitted to bypass the authentication gate. All others receive an access denied error.
+    \item \textbf{Secrets Management:} Managed via \texttt{.streamlit/secrets.toml}.
+\end{itemize}
+
+\subsection{Network Routing}
+\begin{itemize}
+    \item \textbf{Local Hosting:} The app runs locally on \texttt{0.0.0.0:8501}.
+    \item \textbf{Tunneling:} Secure external access is achieved via an \texttt{ngrok} persistent tunnel bound to the static domain: \texttt{subprime-overbook-footwear.ngrok-free.dev}.
+\end{itemize}
+
+\section{Technology Stack}
+\begin{itemize}
+    \item \textbf{Frontend / UI Framework:} Streamlit (v1.32.0+) for rapid reactive UI generation.
+    \item \textbf{Styling:} Raw HTML, CSS, and Plotly (for interactive charts). Glassmorphism UI techniques are injected directly via Markdown components.
+    \item \textbf{Data Processing:} Pandas (for DataFrame manipulation, rolling averages, and anomaly detection).
+    \item \textbf{Authentication library:} Authlib (with httpx) handling the OIDC handshakes.
+    \item \textbf{Environment:} Python 3.14 Virtual Environment (\texttt{venv}).
+\end{itemize}
+
+\section{Directory \& File Structure}
+The application resides securely in \texttt{/home/alier/okidi-finance-os/}.
+\begin{verbatim}
+okidi-finance-os/
+|-- dashboard.py           # Main application entry point & UI layer
+|-- accounting.py          # Core logic for ledger parsing, burn rates & metrics
+|-- finance_advisor.py     # AI rules engine & anomaly detection logic
+|-- raw_receipts_log.jsonl # Append-only database for raw ingested user data
+|-- income_ledger.csv      # Processed incoming cash flows
+|-- expenses_ledger.csv    # Processed outgoing cash flows
+|-- savings_ledger.csv     # Asset & savings allocation
+|-- crypto_conversions.csv # Ledger for cross-chain swaps & fiat ramps
+|-- .streamlit/
+|   |-- secrets.toml       # OIDC client credentials & metadata URLs
+|-- venv/                  # Isolated Python environment
+|-- requirements.txt       # Dependency manifest
+\end{verbatim}
+
+\section{Data Workflow \& AI Ingestion Protocol}
+To maintain data purity for future AI training, the system employs a two-tier data workflow:
+
+\subsection{Phase 1: Raw Data Ingestion}
+When raw text, screenshots, or receipts are provided by the user, the AI agent natively intercepts the data and permanently appends it to \texttt{raw\_receipts\_log.jsonl}. This JSON Lines file acts as the untampered 'source of truth'.
+
+\subsection{Phase 2: Structured Processing}
+The system extracts actionable metadata (Date, Vendor, Category, Amount in UGX/USD) from the raw payload and updates the respective CSV ledgers (\texttt{expenses\_ledger.csv}, \texttt{income\_ledger.csv}).
+
+\subsection{Phase 3: Visualization \& Advisement}
+\texttt{accounting.py} continuously polls the CSVs, recalculates the cash runway and burn rates, and \texttt{dashboard.py} renders these metrics live. Simultaneously, \texttt{finance\_advisor.py} calculates Z-scores for standard deviation to flag spending anomalies.
+
+\section{Maintenance \& Upgrade Procedures}
+
+\subsection{Starting the Application Services}
+If the server reboots, the following sequence must be executed:
+\begin{enumerate}
+    \item \textbf{Launch Tunnel:} \texttt{ngrok http --url=subprime-overbook-footwear.ngrok-free.dev 8501}
+    \item \textbf{Launch App:} \texttt{source venv/bin/activate \&\& streamlit run dashboard.py}
+\end{enumerate}
+
+\subsection{Dependency Upgrades}
+To upgrade dependencies safely without breaking the OIDC Authlib integration:
+\begin{verbatim}
+source venv/bin/activate
+pip install -r requirements.txt --upgrade
+\end{verbatim}
+\textit{Note: Ensure \texttt{httpx} and \texttt{authlib} remain compatible with Starlette/Streamlit.}
+
+\subsection{Security Key Rotation}
+If the Google Client ID or Secret is compromised:
+\begin{enumerate}
+    \item Generate new credentials in the Google Cloud Console.
+    \item Update \texttt{/home/alier/okidi-finance-os/.streamlit/secrets.toml}.
+    \item Restart the Streamlit server to invalidate active sessions and enforce re-authentication.
+\end{enumerate}
+
+\vspace{2cm}
+Kind regards,\
+CazzyGames Technical Operations
+
+\end{document}

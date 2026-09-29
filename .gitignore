@@ -1,0 +1,14 @@
+venv/
+__pycache__/
+*.pyc
+.streamlit/secrets.toml
+*.pdf
+*.jpg
+*.jpeg
+*.png
+advisor_state.json
+.env
+
+*.csv
+*.jsonl
+

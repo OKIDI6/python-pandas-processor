@@ -4,3 +4,4 @@ plotly
 requests
 Authlib
 httpx
+st-gsheets-connection

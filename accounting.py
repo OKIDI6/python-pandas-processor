@@ -1,4 +1,6 @@
 import pandas as pd
+import streamlit as st
+from streamlit_gsheets import GSheetsConnection
 import os
 import requests
 from typing import Dict, Any
@@ -96,35 +98,37 @@ def calculate_uganda_tax(gross_ugx: float) -> Dict[str, float]:
 
 class LedgerManager:
     def __init__(self):
-        self.income_path = os.path.join(BASE_DIR, "income_ledger.csv")
-        self.expenses_path = os.path.join(BASE_DIR, "expenses_ledger.csv")
-        self.savings_path = os.path.join(BASE_DIR, "savings_ledger.csv")
+        try:
+            self.conn = st.connection("gsheets", type=GSheetsConnection)
+        except Exception as e:
+            print(f"Error connecting to gsheets: {e}")
+            self.conn = None
 
     def load_income(self) -> pd.DataFrame:
         try:
-            df = pd.read_csv(self.income_path)
+            df = self.conn.read(worksheet="Income")
             for col in ["Expected_USD", "Received_USDT", "Pending_USD"]:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
             return df
-        except FileNotFoundError:
+        except Exception:
             return pd.DataFrame(columns=["Date", "Category", "Description", "Expected_USD", "Received_USDT", "Pending_USD"])
 
     def load_expenses(self) -> pd.DataFrame:
         try:
-            df = pd.read_csv(self.expenses_path)
+            df = self.conn.read(worksheet="Expenses")
             df["Amount_UGX"] = pd.to_numeric(df.get("Amount_UGX", 0), errors="coerce").fillna(0.0)
             return df
-        except FileNotFoundError:
+        except Exception:
             return pd.DataFrame(columns=["Date", "Category", "Description", "Amount_UGX", "Notes"])
 
     def load_savings(self, ugx_rate: float = 3680.0) -> pd.DataFrame:
         try:
-            df = pd.read_csv(self.savings_path)
+            df = self.conn.read(worksheet="Savings")
             for col in ["Amount_USDT", "Amount_UGX"]:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
-        except FileNotFoundError:
+        except Exception:
             df = pd.DataFrame(columns=["Date", "Description", "Amount_USDT", "Amount_UGX", "Notes"])
 
         # Auto-route UCU Lab Tech Role income directly into savings when received
@@ -134,12 +138,10 @@ class LedgerManager:
             auto_savings = []
             for _, row in ucu_rows.iterrows():
                 if row["Received_USDT"] > 0:
-                    # Calculate true net received
                     gross_ugx = row["Received_USDT"] * ugx_rate
                     tax_info = calculate_uganda_tax(gross_ugx)
                     net_ugx = tax_info["net"]
                     net_usdt = net_ugx / ugx_rate
-                    
                     auto_savings.append({
                         "Date": row["Date"],
                         "Description": "Auto-Saving: UCU Lab Tech Wage (Net)",
@@ -156,14 +158,14 @@ class LedgerManager:
         df = self.load_expenses()
         new_row = pd.DataFrame([{"Date": date, "Category": category, "Description": description, "Amount_UGX": amount_ugx, "Notes": notes}])
         df = pd.concat([df, new_row], ignore_index=True)
-        df.to_csv(self.expenses_path, index=False)
+        self.conn.update(worksheet="Expenses", data=df)
 
     def add_saving(self, date: str, description: str, amount_usdt: float, ugx_rate: float, notes: str = ""):
         df = self.load_savings()
         amount_ugx = round(amount_usdt * ugx_rate, 0)
         new_row = pd.DataFrame([{"Date": date, "Description": description, "Amount_USDT": amount_usdt, "Amount_UGX": amount_ugx, "Notes": notes}])
         df = pd.concat([df, new_row], ignore_index=True)
-        df.to_csv(self.savings_path, index=False)
+        self.conn.update(worksheet="Savings", data=df)
 
     def get_summary(self, ugx_rate: float = 3680.0) -> Dict[str, Any]:
         income_df = self.load_income()
@@ -176,7 +178,6 @@ class LedgerManager:
         total_expenses_ugx = expenses_df["Amount_UGX"].sum() if not expenses_df.empty else 0.0
         total_savings_usdt = savings_df["Amount_USDT"].sum() if not savings_df.empty else 0.0
 
-        # Automatic Tax Tracking for UCU Role
         total_tax_usd = 0.0
         total_nssf_usd = 0.0
         total_paye_usd = 0.0
@@ -184,7 +185,6 @@ class LedgerManager:
         if not income_df.empty:
             ucu_rows = income_df[income_df["Category"] == "Electronics_Lab_Technician_Graduate_Intern"]
             for _, row in ucu_rows.iterrows():
-                # Convert expected USD back to UGX gross to calculate exact local taxes
                 gross_ugx = row["Expected_USD"] * ugx_rate
                 tax_info = calculate_uganda_tax(gross_ugx)
                 
@@ -193,14 +193,12 @@ class LedgerManager:
                 total_nssf_usd += tax_info["nssf"] / ugx_rate
                 total_paye_usd += tax_info["paye"] / ugx_rate
                 
-                # Reduce Expected and Pending/Received by the withheld tax amount
                 total_expected_usd -= tax_usd
                 if row["Pending_USD"] > 0:
                     total_pending_usd -= tax_usd
                 if row["Received_USDT"] > 0:
                     total_received_usdt -= tax_usd
 
-        # Currency conversions
         total_received_ugx = round(total_received_usdt * ugx_rate, 0)
         total_expenses_usd = round(total_expenses_ugx / ugx_rate, 2)
         total_savings_ugx = round(total_savings_usdt * ugx_rate, 0)

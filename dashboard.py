@@ -9,6 +9,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from accounting import LedgerManager, CONTRACT, get_live_ugx_rate
 from finance_advisor import generate_financial_insights
+from receipt_ingestion import process_raw_receipts
 
 # ─── PAGE CONFIG ─────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -429,7 +430,7 @@ with tab1:
             title=dict(text="Cashflow Breakdown", font=dict(color='white', size=16, family='Space Grotesk')),
             margin=dict(t=40, b=0, l=0, r=0)
         )
-        st.plotly_chart(fig, width="stretch")
+        st.plotly_chart(fig, use_container_width=True)
 
     with c2:
         # Gauge for contract fulfillment
@@ -462,7 +463,7 @@ with tab1:
             font=dict(color='white', family='Inter'),
             margin=dict(t=40, b=20, l=20, r=20), height=350
         )
-        st.plotly_chart(fig2, width="stretch")
+        st.plotly_chart(fig2, use_container_width=True)
 
     # ── USD vs UGX quick conversion banner ──
     st.markdown(f"""
@@ -519,8 +520,8 @@ with tab2:
             legend=dict(bgcolor='rgba(0,0,0,0)'),
             title_font=dict(color='white', family='Space Grotesk', size=15)
         )
-        st.plotly_chart(fig, width="stretch")
-        st.dataframe(income_df, width="stretch")
+        st.plotly_chart(fig, use_container_width=True)
+        st.dataframe(income_df, use_container_width=True)
     else:
         st.info("No income records yet.")
 
@@ -534,6 +535,18 @@ with tab3:
       Track Your Expenses
     </div>
     """, unsafe_allow_html=True)
+
+    with st.expander("🤖 Auto-Ingest MoMo Receipts"):
+        st.markdown("Automatically parses raw MoMo SMS logs (`raw_receipts_log.jsonl`) into your expense ledger.")
+        if st.button("Process Raw Receipts", type="primary"):
+            new_expenses = process_raw_receipts()
+            if new_expenses:
+                for exp in new_expenses:
+                    mgr.add_expense(exp["Date"], exp["Category"], exp["Description"], exp["Amount_UGX"], exp["Notes"])
+                st.success(f"Successfully ingested {len(new_expenses)} new expenses!")
+                st.rerun()
+            else:
+                st.info("No new receipts found.")
 
     # Add expense form
     with st.expander("➕ Add New Expense"):
@@ -569,8 +582,8 @@ with tab3:
             title_font=dict(color='white', family='Space Grotesk', size=15)
         )
         fig_exp.update_traces(textfont=dict(color='white'))
-        st.plotly_chart(fig_exp, width="stretch")
-        st.dataframe(expenses_df, width="stretch")
+        st.plotly_chart(fig_exp, use_container_width=True)
+        st.dataframe(expenses_df, use_container_width=True)
     else:
         st.info("No expenses logged yet. Add your first one above!")
 
@@ -664,8 +677,8 @@ with tab4:
             legend=dict(bgcolor='rgba(0,0,0,0)'),
             title_font=dict(color='white', family='Space Grotesk', size=15)
         )
-        st.plotly_chart(fig_sav, width="stretch")
-        st.dataframe(savings_df, width="stretch")
+        st.plotly_chart(fig_sav, use_container_width=True)
+        st.dataframe(savings_df, use_container_width=True)
     else:
         st.info("No savings recorded yet. Start saving to see your growth here!")
 

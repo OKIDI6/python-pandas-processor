@@ -218,27 +218,22 @@ def generate_smart_budget(income_usdt: float, ugx_rate: float, expenses_df: pd.D
     """
     Generate a recommended monthly budget allocation based on the 50/30/20 rule,
     adapted to the user's actual spending patterns.
-
-    As more data accumulates, the algorithm shifts from the generic 50/30/20 rule
-    toward a personalized model based on the user's real behavior.
     """
     gross_ugx = income_usdt * ugx_rate
 
     # Base 50/30/20 allocation
     budget = {
-        "needs_ugx": round(gross_ugx * 0.50),       # Rent, groceries, transport
-        "wants_ugx": round(gross_ugx * 0.20),       # Entertainment, personal
-        "savings_ugx": round(gross_ugx * 0.20),     # Savings target
-        "tithe_ugx": round(gross_ugx * 0.10),       # Tithe/donations (user pattern)
+        "needs_ugx": round(gross_ugx * 0.50),
+        "wants_ugx": round(gross_ugx * 0.20),
+        "savings_ugx": round(gross_ugx * 0.20),
+        "tithe_ugx": round(gross_ugx * 0.10),
         "model": "50/20/20/10 (Generic + Tithe)",
     }
 
-    # Adaptive: if we have enough expense data, blend with actual patterns
     if not expenses_df.empty and len(expenses_df) >= 5:
         cats = analyze_category_breakdown(expenses_df)
         cat_map = {c["category"]: c["percentage"] for c in cats}
 
-        # Detect if user consistently tithes, and adjust model
         tithe_pct = sum(v for k, v in cat_map.items() if "Donation" in k or "Tithe" in k or "Church" in k)
         housing_pct = sum(v for k, v in cat_map.items() if "Housing" in k or "Rent" in k)
 
@@ -246,6 +241,29 @@ def generate_smart_budget(income_usdt: float, ugx_rate: float, expenses_df: pd.D
             budget["model"] = f"Adaptive (Tithe: {tithe_pct:.0f}%, Housing: {housing_pct:.0f}%)"
 
     return budget
+
+
+def mini_market_agent(expenses_df: pd.DataFrame, runway_days: float, health_score: int) -> str:
+    """
+    Simulates a mini market agent that looks at overall system state
+    and gives a 'macro' strategic recommendation.
+    """
+    if expenses_df.empty:
+        return "Not enough data yet. Keep logging your transactions for strategic insights."
+        
+    df = expenses_df.copy()
+    total_spent = df["Amount_UGX"].sum()
+    freq = len(df)
+    avg_txn = total_spent / freq if freq > 0 else 0
+    
+    if health_score < 50:
+        return f"AGENT ALERT: System health is critical. Pause all discretionary spending immediately. Average transaction size is UGX {avg_txn:,.0f}, look for areas to cut this in half."
+    elif runway_days < 14:
+        return "AGENT ADVICE: Liquidity is tightening. Delay any large planned purchases until the next cash inflow."
+    elif freq > 20 and avg_txn < 20000:
+        return f"AGENT ADVICE: High transaction frequency ({freq} txns). You are making many small purchases (avg UGX {avg_txn:,.0f}) which increases fee leakage and 'death by a thousand cuts'. Try to bulk buy."
+    else:
+        return "AGENT ADVICE: Finances are stable. Consider sweeping excess cash into USDT savings or an interest-bearing asset to combat inflation."
 
 
 def generate_financial_insights(
@@ -341,6 +359,14 @@ def generate_financial_insights(
         health_score -= 5
 
     health_score = max(0, min(100, health_score))
+    
+    # Mini market agent insight
+    agent_insight = mini_market_agent(expenses_df, runway.get("days_remaining", 999), health_score)
+    recommendations.insert(0, {
+        "priority": "P0" if health_score < 50 else "P1",
+        "title": "Macro Strategy (Market Agent)",
+        "action": agent_insight,
+    })
 
     # Store trend snapshot for learning
     state["spending_trend_history"].append({

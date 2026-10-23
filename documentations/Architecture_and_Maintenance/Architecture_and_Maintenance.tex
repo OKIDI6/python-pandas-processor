@@ -94,6 +94,15 @@ The system extracts actionable metadata (Date, Vendor, Category, Amount in UGX/U
 \subsection{Phase 3: Visualization \& Advisement}
 \texttt{accounting.py} continuously polls the CSVs, recalculates the cash runway and burn rates, and \texttt{dashboard.py} renders these metrics live. Simultaneously, \texttt{finance\_advisor.py} calculates Z-scores for standard deviation to flag spending anomalies.
 
+\section{Multi-Contract \& Statutory Tax Architecture}
+The system supports simultaneous multi-source contract and payroll tracking:
+\begin{enumerate}
+    \item \textbf{CazzyGames Retainer:} Team Lead IT \& MarTech Engineer. Configured with standard base salary, overtime multipliers (1.5x), and USD-denominated invoicing.
+    \item \textbf{UCU Teaching Appointment:} Part-time Tutorial Assistant (Faculty of Engineering, Design \& Technology: SNF2108 Wide Area Network Engineering). Total semester remuneration of UgShs 3,472,200/= disbursed in four monthly installments of UgShs 868,050/=.
+    \item \textbf{Uganda Tax Engine:} Built-in tax modeling applying progressive PAYE bands according to the Uganda Income Tax Act, NSSF (5\% employee deduction), and Local Service Tax (LST).
+    \item \textbf{Autonomous Savings Routing:} Net proceeds from educational appointments are automatically routed to the Savings Ledger to enforce aggressive capital accumulation toward target hardware goals.
+\end{enumerate}
+
 \section{Maintenance \& Upgrade Procedures}
 
 \subsection{Starting the Application Services}

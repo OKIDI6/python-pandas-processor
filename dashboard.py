@@ -7,7 +7,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from accounting import LedgerManager, CONTRACT, get_live_ugx_rate
+from accounting import LedgerManager, CONTRACT, UCU_CONTRACT, get_live_ugx_rate
 from finance_advisor import generate_financial_insights
 from receipt_ingestion import process_raw_receipts
 
@@ -358,12 +358,21 @@ with st.sidebar:
     st.markdown("""
     <div style="font-family:'Space Grotesk',sans-serif; font-size:1rem; font-weight:600; 
                 color:rgba(255,255,255,0.7); margin-bottom:12px;">
-      Contract Rates
+      🏢 CazzyGames Retainer
     </div>
     """, unsafe_allow_html=True)
     st.info(f"Base Pay: **${CONTRACT['trial_fee_usd']:,.0f} USD / month**")
     st.info(f"Overtime Rate: **${CONTRACT['overtime_rate_usd']:,.2f} / hr** (1.5x)")
     st.info(f"Post-Trial: **${CONTRACT['post_trial_fee_usd']:,.0f} USD / month**")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("""
+    <div style="font-family:'Space Grotesk',sans-serif; font-size:1rem; font-weight:600; 
+                color:rgba(255,255,255,0.7); margin-bottom:12px;">
+      🎓 UCU Teaching Appointment
+    </div>
+    """, unsafe_allow_html=True)
+    st.info(f"Role: **{UCU_CONTRACT['role']}**\n\nSubject: **{UCU_CONTRACT['subject_code']} - {UCU_CONTRACT['subject_name']}**\n\nGross Pay: **UGX {UCU_CONTRACT['monthly_gross_ugx']:,.0f} / mo** (4 installments)")
 
 # ─── LOAD DATA ───────────────────────────────────────────────────────────────
 mgr = LedgerManager()
@@ -496,6 +505,66 @@ with tab2:
       Work Income & Salary
     </div>
     """, unsafe_allow_html=True)
+
+    with st.expander("📥 Ingest UCU Teaching Contract (4 Installments)"):
+        st.markdown(f"""
+        **Contract:** Part-time Tutorial Assistant at UCU ({UCU_CONTRACT['subject_code']} - {UCU_CONTRACT['subject_name']}).  
+        **Installment Value:** UgShs {UCU_CONTRACT['monthly_gross_ugx']:,.0f} gross (~${UCU_CONTRACT['monthly_gross_ugx']/ugx_rate:,.2f} USD).  
+        **Total Value:** UgShs {UCU_CONTRACT['total_gross_ugx']:,.0f} gross across 4 monthly installments.  
+        Clicking below will add any missing installments to your Income ledger as pending receivables.
+        """)
+        if st.button("Add 4x UCU TA Installments to Ledger", type="primary", key="btn_ingest_ucu"):
+            installments = [
+                {"date": "2026-08-31", "desc": "UCU TA Installment 1/4 (SNF2108 WAN Eng - UgShs 868,050/=)"},
+                {"date": "2026-09-30", "desc": "UCU TA Installment 2/4 (SNF2108 WAN Eng - UgShs 868,050/=)"},
+                {"date": "2026-10-31", "desc": "UCU TA Installment 3/4 (SNF2108 WAN Eng - UgShs 868,050/=)"},
+                {"date": "2026-12-04", "desc": "UCU TA Installment 4/4 (Results Submission - UgShs 868,050/=)"},
+            ]
+            current_income = mgr.load_income()
+            existing_descs = set(current_income["Description"].astype(str).tolist()) if not current_income.empty else set()
+            added_count = 0
+            usd_per_inst = round(UCU_CONTRACT["monthly_gross_ugx"] / ugx_rate, 2)
+            for inst in installments:
+                if inst["desc"] not in existing_descs:
+                    mgr.add_income(
+                        date=inst["date"],
+                        category="UCU_Tutorial_Assistant",
+                        description=inst["desc"],
+                        expected_usd=usd_per_inst,
+                        received_usdt=0.0,
+                        pending_usd=usd_per_inst
+                    )
+                    added_count += 1
+            if added_count > 0:
+                st.success(f"Successfully added {added_count} installments to Income ledger!")
+                st.rerun()
+            else:
+                st.info("All 4 UCU TA installments already exist in your Income ledger.")
+
+    with st.expander("➕ Add New Income Record"):
+        col1, col2 = st.columns(2)
+        with col1:
+            inc_date = st.date_input("Date", value=date.today(), key="inc_date")
+            inc_category = st.selectbox("Category", [
+                "Base Pay", "Overtime", "Reimbursement", 
+                "UCU_Tutorial_Assistant", "Electronics_Lab_Technician_Graduate_Intern", 
+                "Freelance / Consulting", "Other"
+            ], key="inc_cat")
+        with col2:
+            inc_desc = st.text_input("Description", placeholder="e.g. October Base Pay", key="inc_desc")
+            inc_expected = st.number_input("Expected Amount (USD)", min_value=0.0, step=10.0, key="inc_exp")
+        c_rec, c_pend = st.columns(2)
+        with c_rec:
+            inc_received = st.number_input("Received (USDT)", min_value=0.0, step=10.0, key="inc_rec")
+        with c_pend:
+            inc_pending = st.number_input("Still Pending (USD)", min_value=0.0, step=10.0, value=max(inc_expected - inc_received, 0.0), key="inc_pend")
+        if st.button("Save Income Record", key="btn_save_inc"):
+            if inc_desc and inc_expected > 0:
+                mgr.add_income(str(inc_date), inc_category, inc_desc, inc_expected, inc_received, inc_pending)
+                st.success("Income record saved!")
+                st.rerun()
+            else:
+                st.warning("Please fill in description and expected amount.")
 
     if not income_df.empty:
         c1, c2, c3 = st.columns(3)

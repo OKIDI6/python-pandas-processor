@@ -30,6 +30,36 @@ CONTRACT = {
 CONTRACT["base_rate_usd"] = round(CONTRACT["trial_fee_usd"] / CONTRACT["monthly_hours"], 2)
 CONTRACT["overtime_rate_usd"] = round(CONTRACT["base_rate_usd"] * CONTRACT["overtime_multiplier"], 2)
 
+UCU_CONTRACT = {
+    "name": "Okidi Norbert",
+    "institution": "Uganda Christian University",
+    "faculty": "Faculty of Engineering, Design & Technology",
+    "department": "Computing & Technology",
+    "role": "Part-time Tutorial Assistant",
+    "subject_code": "SNF2108",
+    "subject_name": "Wide Area Network Engineering",
+    "appointment_date": "2026-08-10",
+    "start_date": "2026-08-12",
+    "end_date": "2026-12-04",
+    "weekly_hours": 4.0,
+    "total_gross_ugx": 3472200.0,
+    "installments_count": 4,
+    "monthly_gross_ugx": 868050.0,
+}
+
+UCU_CATEGORIES = {
+    "Electronics_Lab_Technician_Graduate_Intern",
+    "UCU_Tutorial_Assistant",
+    "Part_Time_Tutorial_Assistant",
+    "UCU_Teaching_Assistant",
+}
+
+def is_ucu_income(category: str) -> bool:
+    if not isinstance(category, str):
+        return False
+    cat = category.strip()
+    return cat in UCU_CATEGORIES or "UCU" in cat.upper() or "TUTORIAL_ASSISTANT" in cat.upper()
+
 
 def calculate_uganda_tax(gross_ugx: float) -> Dict[str, float]:
     """Smart algorithm to calculate Uganda taxes based on URA ranges."""
@@ -63,8 +93,7 @@ def calculate_uganda_tax(gross_ugx: float) -> Dict[str, float]:
     lst_installment = round(annual_lst / 3) if annual_lst > 0 else 0.0
 
     # 3. PAYE Calculation
-    # Note: UCU taxable income might sometimes differ, but standard URA rule is Gross - NSSF
-    # We will compute PAYE smartly based on the exact URA monthly brackets.
+    # Standard URA rule is Gross - NSSF
     taxable_income = gross_ugx - nssf
     
     paye = 0.0
@@ -80,11 +109,6 @@ def calculate_uganda_tax(gross_ugx: float) -> Dict[str, float]:
     # Additional 10% for income exceeding 10,000,000 UGX
     if taxable_income > 10000000:
         paye += (taxable_income - 10000000) * 0.10
-
-    # 4. For the edge case where arrears combine months (like Sep 2026 UCU Payslip), 
-    # we leave standard calculations active. If total_tax calculation drifts from accounting norms, 
-    # the exact payslip PAYE overrides can be fed through a separate arrears calculator, 
-    # but this covers 99% of normal monthly executions automatically.
 
     return {
         "gross": gross_ugx,
@@ -105,36 +129,73 @@ class LedgerManager:
             self.conn = None
 
     def load_income(self) -> pd.DataFrame:
-        try:
-            df = self.conn.read(worksheet="Income", ttl=60)
-            for col in ["Expected_USD", "Received_USDT", "Pending_USD"]:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
-            return df
-        except Exception:
-            return pd.DataFrame(columns=["Date", "Category", "Description", "Expected_USD", "Received_USDT", "Pending_USD"])
+        if self.conn:
+            try:
+                df = self.conn.read(worksheet="Income", ttl=60)
+                for col in ["Expected_USD", "Received_USDT", "Pending_USD"]:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+                return df
+            except Exception as e:
+                print(f"Error reading gsheets Income: {e}")
+        local_csv = os.path.join(BASE_DIR, "income_ledger.csv")
+        if os.path.exists(local_csv):
+            try:
+                df = pd.read_csv(local_csv)
+                for col in ["Expected_USD", "Received_USDT", "Pending_USD"]:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+                return df
+            except Exception:
+                pass
+        return pd.DataFrame(columns=["Date", "Category", "Description", "Expected_USD", "Received_USDT", "Pending_USD"])
 
     def load_expenses(self) -> pd.DataFrame:
-        try:
-            df = self.conn.read(worksheet="Expenses", ttl=60)
-            df["Amount_UGX"] = pd.to_numeric(df.get("Amount_UGX", 0), errors="coerce").fillna(0.0)
-            return df
-        except Exception:
-            return pd.DataFrame(columns=["Date", "Category", "Description", "Amount_UGX", "Notes"])
+        if self.conn:
+            try:
+                df = self.conn.read(worksheet="Expenses", ttl=60)
+                df["Amount_UGX"] = pd.to_numeric(df.get("Amount_UGX", 0), errors="coerce").fillna(0.0)
+                return df
+            except Exception as e:
+                print(f"Error reading gsheets Expenses: {e}")
+        local_csv = os.path.join(BASE_DIR, "expenses_ledger.csv")
+        if os.path.exists(local_csv):
+            try:
+                df = pd.read_csv(local_csv)
+                df["Amount_UGX"] = pd.to_numeric(df.get("Amount_UGX", 0), errors="coerce").fillna(0.0)
+                return df
+            except Exception:
+                pass
+        return pd.DataFrame(columns=["Date", "Category", "Description", "Amount_UGX", "Notes"])
 
     def load_savings(self, ugx_rate: float = 3680.0) -> pd.DataFrame:
-        try:
-            df = self.conn.read(worksheet="Savings", ttl=60)
-            for col in ["Amount_USDT", "Amount_UGX"]:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
-        except Exception:
-            df = pd.DataFrame(columns=["Date", "Description", "Amount_USDT", "Amount_UGX", "Notes"])
+        loaded = False
+        df = pd.DataFrame(columns=["Date", "Description", "Amount_USDT", "Amount_UGX", "Notes"])
+        if self.conn:
+            try:
+                df = self.conn.read(worksheet="Savings", ttl=60)
+                for col in ["Amount_USDT", "Amount_UGX"]:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+                loaded = True
+            except Exception as e:
+                print(f"Error reading gsheets Savings: {e}")
+        if not loaded:
+            local_csv = os.path.join(BASE_DIR, "savings_ledger.csv")
+            if os.path.exists(local_csv):
+                try:
+                    df = pd.read_csv(local_csv)
+                    for col in ["Amount_USDT", "Amount_UGX"]:
+                        if col in df.columns:
+                            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+                except Exception:
+                    df = pd.DataFrame(columns=["Date", "Description", "Amount_USDT", "Amount_UGX", "Notes"])
 
-        # Auto-route UCU Lab Tech Role income directly into savings when received
+        # Auto-route UCU wages (Lab Tech & Tutorial Assistant) directly into savings when received
         income_df = self.load_income()
         if not income_df.empty:
-            ucu_rows = income_df[income_df["Category"] == "Electronics_Lab_Technician_Graduate_Intern"]
+            ucu_mask = income_df["Category"].apply(is_ucu_income)
+            ucu_rows = income_df[ucu_mask]
             auto_savings = []
             for _, row in ucu_rows.iterrows():
                 if row["Received_USDT"] > 0:
@@ -142,30 +203,69 @@ class LedgerManager:
                     tax_info = calculate_uganda_tax(gross_ugx)
                     net_ugx = tax_info["net"]
                     net_usdt = net_ugx / ugx_rate
+                    desc = "UCU Wage"
+                    if "Lab" in str(row["Category"]):
+                        desc = "UCU Lab Tech Wage"
+                    elif "Tutorial" in str(row["Category"]) or "Teaching" in str(row["Category"]):
+                        desc = "UCU Tutorial Assistant Wage"
                     auto_savings.append({
                         "Date": row["Date"],
-                        "Description": "Auto-Saving: UCU Lab Tech Wage (Net)",
+                        "Description": f"Auto-Saving: {desc} (Net)",
                         "Amount_USDT": round(net_usdt, 2),
                         "Amount_UGX": round(net_ugx, 0),
-                        "Notes": "Automatically routed from Income"
+                        "Notes": f"Automatically routed from Income ({row['Description']})"
                     })
             if auto_savings:
                 df = pd.concat([df, pd.DataFrame(auto_savings)], ignore_index=True)
                 
         return df
 
+    def add_income(self, date: str, category: str, description: str, expected_usd: float, received_usdt: float = 0.0, pending_usd: float = 0.0):
+        df = self.load_income()
+        new_row = pd.DataFrame([{
+            "Date": date,
+            "Category": category,
+            "Description": description,
+            "Expected_USD": expected_usd,
+            "Received_USDT": received_usdt,
+            "Pending_USD": pending_usd
+        }])
+        df = pd.concat([df, new_row], ignore_index=True)
+        if self.conn:
+            try:
+                self.conn.update(worksheet="Income", data=df)
+            except Exception as e:
+                print(f"Error updating gsheets Income: {e}")
+        local_csv = os.path.join(BASE_DIR, "income_ledger.csv")
+        df.to_csv(local_csv, index=False)
+
     def add_expense(self, date: str, category: str, description: str, amount_ugx: float, notes: str = ""):
         df = self.load_expenses()
         new_row = pd.DataFrame([{"Date": date, "Category": category, "Description": description, "Amount_UGX": amount_ugx, "Notes": notes}])
         df = pd.concat([df, new_row], ignore_index=True)
-        self.conn.update(worksheet="Expenses", data=df)
+        if self.conn:
+            try:
+                self.conn.update(worksheet="Expenses", data=df)
+            except Exception as e:
+                print(f"Error updating gsheets Expenses: {e}")
+        local_csv = os.path.join(BASE_DIR, "expenses_ledger.csv")
+        df.to_csv(local_csv, index=False)
 
     def add_saving(self, date: str, description: str, amount_usdt: float, ugx_rate: float, notes: str = ""):
-        df = self.load_savings()
+        df = self.load_savings(ugx_rate=ugx_rate)
+        # Avoid saving virtual auto-savings rows back into the ledger
+        if "Notes" in df.columns:
+            df = df[~df["Notes"].astype(str).str.contains("Automatically routed from Income", na=False)]
         amount_ugx = round(amount_usdt * ugx_rate, 0)
         new_row = pd.DataFrame([{"Date": date, "Description": description, "Amount_USDT": amount_usdt, "Amount_UGX": amount_ugx, "Notes": notes}])
         df = pd.concat([df, new_row], ignore_index=True)
-        self.conn.update(worksheet="Savings", data=df)
+        if self.conn:
+            try:
+                self.conn.update(worksheet="Savings", data=df)
+            except Exception as e:
+                print(f"Error updating gsheets Savings: {e}")
+        local_csv = os.path.join(BASE_DIR, "savings_ledger.csv")
+        df.to_csv(local_csv, index=False)
 
     def get_summary(self, ugx_rate: float = 3680.0) -> Dict[str, Any]:
         income_df = self.load_income()
@@ -183,7 +283,8 @@ class LedgerManager:
         total_paye_usd = 0.0
 
         if not income_df.empty:
-            ucu_rows = income_df[income_df["Category"] == "Electronics_Lab_Technician_Graduate_Intern"]
+            ucu_mask = income_df["Category"].apply(is_ucu_income)
+            ucu_rows = income_df[ucu_mask]
             for _, row in ucu_rows.iterrows():
                 gross_ugx = row["Expected_USD"] * ugx_rate
                 tax_info = calculate_uganda_tax(gross_ugx)

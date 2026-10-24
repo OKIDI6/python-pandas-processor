@@ -246,10 +246,21 @@ def generate_smart_budget(income_usdt: float, ugx_rate: float, expenses_df: pd.D
 def mini_market_agent(expenses_df: pd.DataFrame, runway_days: float, health_score: int) -> str:
     """
     Simulates a mini market agent that looks at overall system state
-    and gives a 'macro' strategic recommendation.
+    and gives a 'macro' strategic recommendation informed by the payroll calendar.
     """
+    today_day = datetime.now().day
+    cycle_context = ""
+    if 20 <= today_day <= 25:
+        days_to_cazzy = max(0, 26 - today_day)
+        cycle_context = f" Pay window active: CazzyGames retainer expected in {days_to_cazzy} day(s) (26th–29th)."
+    elif 26 <= today_day <= 29:
+        cycle_context = " CazzyGames payout window currently active (26th–29th)."
+    elif today_day < 20:
+        days_to_ucu = 23 - today_day
+        cycle_context = f" Next institutional inflow: UCU payday on the 23rd ({days_to_ucu} days away)."
+
     if expenses_df.empty:
-        return "Not enough data yet. Keep logging your transactions for strategic insights."
+        return f"Not enough data yet. Keep logging your transactions for strategic insights.{cycle_context}"
         
     df = expenses_df.copy()
     total_spent = df["Amount_UGX"].sum()
@@ -257,13 +268,13 @@ def mini_market_agent(expenses_df: pd.DataFrame, runway_days: float, health_scor
     avg_txn = total_spent / freq if freq > 0 else 0
     
     if health_score < 50:
-        return f"AGENT ALERT: System health is critical. Pause all discretionary spending immediately. Average transaction size is UGX {avg_txn:,.0f}, look for areas to cut this in half."
+        return f"AGENT ALERT: System health is critical. Pause discretionary spending immediately. Average txn size is UGX {avg_txn:,.0f}.{cycle_context}"
     elif runway_days < 14:
-        return "AGENT ADVICE: Liquidity is tightening. Delay any large planned purchases until the next cash inflow."
+        return f"AGENT ADVICE: Liquidity is tightening. Delay large planned purchases until the next cash inflow.{cycle_context}"
     elif freq > 20 and avg_txn < 20000:
-        return f"AGENT ADVICE: High transaction frequency ({freq} txns). You are making many small purchases (avg UGX {avg_txn:,.0f}) which increases fee leakage and 'death by a thousand cuts'. Try to bulk buy."
+        return f"AGENT ADVICE: High txn frequency ({freq} txns). You are making frequent micro-purchases (avg UGX {avg_txn:,.0f}). Consider batching.{cycle_context}"
     else:
-        return "AGENT ADVICE: Finances are stable. Consider sweeping excess cash into USDT savings or an interest-bearing asset to combat inflation."
+        return f"AGENT ADVICE: Cashflow is stable. Maintain steady allocations into USDT savings or target hardware goals.{cycle_context}"
 
 
 def generate_financial_insights(
@@ -310,6 +321,17 @@ def generate_financial_insights(
             "title": "Outstanding Receivable",
             "action": f"You have ${pending_usd:,.2f} USD pending. Follow up to accelerate collection.",
         })
+
+    recommendations.append({
+        "priority": "P1",
+        "title": "Cycle Budget: 50% CazzyGames Spend & Jumia Scenario",
+        "action": (
+            "Scenario A (Active): 50% CazzyGames spend allocation = UGX 1,840,000. "
+            "Total Shopping / Tech is capped at UGX 800,000 (covers the ~628k Jumia order + ~170k buffer). "
+            "Cash remaining for living = UGX 1,040,000 with UGX 0 rent due (pre-paid 3 months advance through end of Nov). "
+            "Daily allowance > UGX 34,000/day for food and movement. Status: Comfortable and safe."
+        ),
+    })
 
     if burn_rate["trend"] == "accelerating":
         recommendations.append({

@@ -7,7 +7,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from accounting import LedgerManager, CONTRACT, UCU_CONTRACT, get_live_ugx_rate
+from accounting import LedgerManager, CONTRACT, UCU_CONTRACT, PAYROLL_SCHEDULE, get_live_ugx_rate
 from finance_advisor import generate_financial_insights
 from receipt_ingestion import process_raw_receipts
 
@@ -373,6 +373,16 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
     st.info(f"Role: **{UCU_CONTRACT['role']}**\n\nSubject: **{UCU_CONTRACT['subject_code']} - {UCU_CONTRACT['subject_name']}**\n\nGross Pay: **UGX {UCU_CONTRACT['monthly_gross_ugx']:,.0f} / mo** (4 installments)")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("""
+    <div style="font-family:'Space Grotesk',sans-serif; font-size:1rem; font-weight:600; 
+                color:rgba(255,255,255,0.7); margin-bottom:12px;">
+      📅 Payroll Schedule
+    </div>
+    """, unsafe_allow_html=True)
+    st.caption("• **UCU:** 23rd of every month\n  *(Lab Tech & Teaching)*")
+    st.caption("• **CazzyGames:** 26th – 29th of every month\n  *(Retainer Base & Overtime)*")
 
 # ─── LOAD DATA ───────────────────────────────────────────────────────────────
 mgr = LedgerManager()
@@ -843,6 +853,64 @@ with tab5:
         """, unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Scenario A Cashflow Analysis Card ──
+    st.markdown("""
+    <div style="
+        background: linear-gradient(135deg, rgba(59, 130, 246, 0.12) 0%, rgba(139, 92, 246, 0.12) 100%);
+        border: 1px solid rgba(59, 130, 246, 0.3);
+        border-radius: 20px;
+        padding: 24px 28px;
+        margin-bottom: 24px;
+        backdrop-filter: blur(16px);
+    ">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; flex-wrap:wrap; gap:8px;">
+            <div style="font-family:'Space Grotesk',sans-serif; font-size:1.15rem; font-weight:700; color:white;">
+                💡 Budget Scenario: 50% CazzyGames Spend & Jumia Order
+            </div>
+            <div style="
+                background: rgba(16, 185, 129, 0.2);
+                border: 1px solid rgba(16, 185, 129, 0.4);
+                border-radius: 8px;
+                padding: 4px 12px;
+                color: #10b981;
+                font-size: 0.8rem;
+                font-weight: 700;
+                font-family:'Space Grotesk',sans-serif;
+            ">
+                ✅ COMFORTABLE & SAFE
+            </div>
+        </div>
+        <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; margin-bottom:16px;">
+            <div style="background:rgba(255,255,255,0.03); padding:12px 16px; border-radius:12px; border:1px solid rgba(255,255,255,0.06);">
+                <div style="color:rgba(255,255,255,0.5); font-size:0.75rem; text-transform:uppercase;">50% Spend Pool</div>
+                <div style="color:#a78bfa; font-size:1.3rem; font-weight:700; font-family:'Space Grotesk',sans-serif;">UGX 1,840,000</div>
+                <div style="color:rgba(255,255,255,0.4); font-size:0.75rem;">50% of $1,000 Retainer</div>
+            </div>
+            <div style="background:rgba(255,255,255,0.03); padding:12px 16px; border-radius:12px; border:1px solid rgba(255,255,255,0.06);">
+                <div style="color:rgba(255,255,255,0.5); font-size:0.75rem; text-transform:uppercase;">Shopping & Tech Budget</div>
+                <div style="color:#f59e0b; font-size:1.3rem; font-weight:700; font-family:'Space Grotesk',sans-serif;">UGX 800,000</div>
+                <div style="color:rgba(255,255,255,0.4); font-size:0.75rem;">~628k Jumia + ~170k buffer</div>
+            </div>
+            <div style="background:rgba(255,255,255,0.03); padding:12px 16px; border-radius:12px; border:1px solid rgba(255,255,255,0.06);">
+                <div style="color:rgba(255,255,255,0.5); font-size:0.75rem; text-transform:uppercase;">Pure Living Cash Left</div>
+                <div style="color:#10b981; font-size:1.3rem; font-weight:700; font-family:'Space Grotesk',sans-serif;">UGX 1,040,000</div>
+                <div style="color:rgba(255,255,255,0.4); font-size:0.75rem;">Rent = UGX 0 (paid to Dec)</div>
+            </div>
+            <div style="background:rgba(255,255,255,0.03); padding:12px 16px; border-radius:12px; border:1px solid rgba(255,255,255,0.06);">
+                <div style="color:rgba(255,255,255,0.5); font-size:0.75rem; text-transform:uppercase;">Daily Allowance</div>
+                <div style="color:#38bdf8; font-size:1.3rem; font-weight:700; font-family:'Space Grotesk',sans-serif;">> UGX 34,000 / day</div>
+                <div style="color:rgba(255,255,255,0.4); font-size:0.75rem;">Food & transport only</div>
+            </div>
+        </div>
+        <div style="color:rgba(255,255,255,0.7); font-size:0.88rem; line-height:1.6; border-top:1px solid rgba(255,255,255,0.08); padding-top:12px;">
+            <b>Daily Living Breakdown (30 Days):</b><br>
+            • Groceries & Food: ≈ UGX 450,000 &nbsp;|&nbsp; • Transport (Boda/Taxi): ≈ UGX 150,000 &nbsp;|&nbsp; • Airtime & Internet: ≈ UGX 100,000<br>
+            • Tithe / Church: ≈ UGX 80,000 &nbsp;|&nbsp; • Emergency Surplus Cushion: ≈ <b>UGX 260,000</b><br>
+            <i>👉 <b>Verdict:</b> Since house rent was pre-paid 3 months in advance on August 31st (covering through end of November), living on UGX 1.04M for food and transport in Mukono/Kampala leaves a healthy surplus with zero stress.</i>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
     # ── Recommendations ──
     recs = insights["recommendations"]

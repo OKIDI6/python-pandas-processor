@@ -47,6 +47,26 @@ UCU_CONTRACT = {
     "monthly_gross_ugx": 868050.0,
 }
 
+PAYROLL_SCHEDULE = {
+    "UCU": {
+        "name": "Uganda Christian University",
+        "payout_day": 23,
+        "description": "Disburses on the 23rd of every month",
+        "roles": [
+            "Electronics Lab Technician (Graduate Intern)",
+            "Part-time Tutorial Assistant (WAN Engineering)"
+        ],
+    },
+    "CazzyGames": {
+        "name": "CazzyGames",
+        "payout_window": "26th - 29th",
+        "payout_start_day": 26,
+        "payout_end_day": 29,
+        "description": "Disburses between the 26th and 29th of every month",
+        "role": "Team Lead IT & MarTech Engineer",
+    }
+}
+
 UCU_CATEGORIES = {
     "Electronics_Lab_Technician_Graduate_Intern",
     "UCU_Tutorial_Assistant",

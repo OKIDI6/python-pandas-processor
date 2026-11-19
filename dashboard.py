@@ -1,3 +1,6 @@
+import copy
+import html
+import re
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -7,7 +10,16 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from accounting import LedgerManager, CONTRACT, UCU_CONTRACT, PAYROLL_SCHEDULE, get_live_ugx_rate
+from accounting import (
+    LedgerManager,
+    CONTRACT,
+    UCU_CONTRACT,
+    PAYROLL_SCHEDULE,
+    DEFAULT_HARDWARE_GOALS,
+    GOAL_ACCENT_PALETTE,
+    get_live_ugx_rate,
+    project_hardware_goals,
+)
 from finance_advisor import generate_financial_insights
 from receipt_ingestion import process_raw_receipts
 
@@ -389,7 +401,7 @@ mgr = LedgerManager()
 summary = mgr.get_summary(ugx_rate=ugx_rate)
 income_df = mgr.load_income()
 expenses_df = mgr.load_expenses()
-savings_df = mgr.load_savings()
+savings_df = mgr.load_savings(ugx_rate=ugx_rate)
 
 # ─── TABS ─────────────────────────────────────────────────────────────────────
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Overview", "💼 Income", "🛍️ Expenses", "🏦 Savings", "🧠 Advisor"])
@@ -693,7 +705,7 @@ with tab4:
             else:
                 st.warning("Please fill in description and amount.")
 
-    savings_df = mgr.load_savings()
+    savings_df = mgr.load_savings(ugx_rate=ugx_rate)
 
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -705,43 +717,281 @@ with tab4:
         st.metric("Net Worth (USDT)", f"${summary['net_worth_usdt']:,.2f}",
                   delta=f"UGX {summary['net_worth_ugx']:,.0f}")
 
-    # ─── GOAL TRACKER ───
+    # ─── MULTI-GOAL HARDWARE WISHLIST TRACKER ───
     st.markdown("<br>", unsafe_allow_html=True)
-    target_goal_usd = 1500.00
-    progress_percent = min(100, (summary['total_savings_usdt'] / target_goal_usd) * 100) if target_goal_usd > 0 else 0
-    remaining_usd = max(0, target_goal_usd - summary['total_savings_usdt'])
-    
+    if "hardware_goals" not in st.session_state:
+        st.session_state["hardware_goals"] = mgr.load_goals()
+
+    sim_c1, sim_c2, sim_c3, sim_c4 = st.columns([1.4, 1.6, 1.1, 1.1])
+    with sim_c1:
+        alloc_choice = st.selectbox(
+            "Funding Mode",
+            ["Waterfall (Priority Order)", "Independent (Per Item)"],
+            key="goal_alloc_mode",
+            help="Waterfall funds goals sequentially by priority; Independent compares total savings to each item individually.",
+        )
+    with sim_c2:
+        extra_cazzy_save = st.slider(
+            "CazzyGames Allocation / mo (USDT)",
+            min_value=0,
+            max_value=1000,
+            value=250,
+            step=50,
+            key="goal_cazzy_slider",
+            help="Monthly savings allocated from your CazzyGames retainer (lands 26th–29th).",
+        )
+    with sim_c3:
+        st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+        inc_ucu_lab = st.checkbox(
+            "UCU Lab Tech (23rd)",
+            value=True,
+            key="goal_inc_ucu_lab",
+            help="Include monthly net UCU Lab Tech auto-savings landing on the 23rd.",
+        )
+    with sim_c4:
+        st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+        inc_pending_ucu = st.checkbox(
+            "Pending UCU TA",
+            value=True,
+            key="goal_inc_pend_ucu",
+            help="Include pending UCU receivables from your Income ledger (net of Uganda tax).",
+        )
+
+    alloc_mode_key = "independent" if alloc_choice.startswith("Independent") else "waterfall"
+    projection = project_hardware_goals(
+        goals=st.session_state["hardware_goals"],
+        current_savings_usdt=summary["total_savings_usdt"],
+        ugx_rate=ugx_rate,
+        income_df=income_df,
+        include_ucu_lab_monthly=inc_ucu_lab,
+        include_pending_ucu=inc_pending_ucu,
+        extra_cazzy_monthly_usdt=float(extra_cazzy_save),
+        allocation_mode=alloc_mode_key,
+    )
+
+    # Overall Wishlist Roadmap Banner
+    subtitle_bits = [f"{projection['active_count']} Active Goal{'s' if projection['active_count'] != 1 else ''}"]
+    if projection["owned_count"] > 0:
+        subtitle_bits.append(f"{projection['owned_count']} Owned")
+    subtitle_bits.append(f"Run Rate: ${projection['monthly_run_rate_usd']:,.0f}/mo")
+    if inc_pending_ucu and projection["pending_ucu_net_usd"] > 0:
+        subtitle_bits.append(f"+${projection['pending_ucu_net_usd']:,.0f} Pending UCU Net")
+
     st.markdown(f"""
-    <div style="
-      background: linear-gradient(135deg, rgba(236,72,153,0.1), rgba(139,92,246,0.1));
-      border: 1px solid rgba(236,72,153,0.2);
-      border-radius: 16px; padding: 24px;
-      margin-bottom: 24px;
-      position: relative; overflow: hidden;
-    ">
-      <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-bottom:16px;">
-        <div>
-          <div style="color: rgba(255,255,255,0.6); font-family:'Space Grotesk',sans-serif; font-size:0.9rem; font-weight:600; letter-spacing:1px; text-transform:uppercase;">Current Main Goal</div>
-          <div style="color: white; font-family:'Space Grotesk',sans-serif; font-size:1.5rem; font-weight:800; margin-top:4px;">💻 RTX 4070 Work Laptop (Sweet Spot)</div>
-        </div>
-        <div style="text-align:right;">
-          <div style="color: rgba(255,255,255,0.6); font-size:0.9rem;">Target</div>
-          <div style="color: #ec4899; font-family:'Space Grotesk',sans-serif; font-size:1.5rem; font-weight:800;">${target_goal_usd:,.0f} USDT</div>
-        </div>
+<div style="
+  background: linear-gradient(135deg, rgba(139,92,246,0.14), rgba(59,130,246,0.12), rgba(236,72,153,0.12));
+  border: 1px solid rgba(139,92,246,0.3);
+  border-radius: 18px; padding: 24px 28px;
+  margin-bottom: 18px;
+  position: relative; overflow: hidden;
+">
+  <div style="display:flex; justify-content:space-between; align-items:flex-end; flex-wrap:wrap; gap:12px; margin-bottom:16px;">
+    <div>
+      <div style="color: rgba(255,255,255,0.6); font-family:'Space Grotesk',sans-serif; font-size:0.8rem; font-weight:600; letter-spacing:1.2px; text-transform:uppercase;">
+        Hardware Wishlist Roadmap · {' · '.join(subtitle_bits)}
       </div>
-      
-      <!-- Progress Bar Background -->
-      <div style="width:100%; height:12px; background:rgba(0,0,0,0.3); border-radius:6px; overflow:hidden;">
-        <!-- Progress Bar Fill -->
-        <div style="width:{progress_percent}%; height:100%; background:linear-gradient(90deg, #ec4899, #8b5cf6); border-radius:6px; box-shadow:0 0 10px rgba(236,72,153,0.5); transition:width 1s ease-out;"></div>
-      </div>
-      
-      <div style="display:flex; justify-content:space-between; margin-top:12px; font-size:0.9rem;">
-        <div style="color:white; font-weight:600;">{progress_percent:.1f}% Funded</div>
-        <div style="color:rgba(255,255,255,0.6);">${remaining_usd:,.2f} USDT remaining</div>
+      <div style="color: white; font-family:'Space Grotesk',sans-serif; font-size:1.45rem; font-weight:800; margin-top:4px;">
+        🎯 Total Hardware Target
       </div>
     </div>
-    """, unsafe_allow_html=True)
+    <div style="text-align:right;">
+      <div style="color: #ec4899; font-family:'Space Grotesk',sans-serif; font-size:1.55rem; font-weight:800;">
+        ${projection['total_target_usd']:,.0f} USDT
+      </div>
+      <div style="color: rgba(255,255,255,0.55); font-size:0.85rem;">
+        UGX {projection['total_target_ugx']:,.0f} &nbsp;·&nbsp; Est. Complete: <b style="color:#a78bfa;">{html.escape(projection['all_funded_eta_label'])}</b>
+      </div>
+    </div>
+  </div>
+  <div style="width:100%; height:12px; background:rgba(0,0,0,0.35); border-radius:6px; overflow:hidden;">
+    <div style="width:{projection['overall_progress_pct']}%; height:100%; background:linear-gradient(90deg, #3b82f6, #8b5cf6, #ec4899); border-radius:6px; box-shadow:0 0 12px rgba(139,92,246,0.5); transition:width 0.8s ease-out;"></div>
+  </div>
+  <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px; margin-top:12px; font-size:0.88rem;">
+    <div style="color:white; font-weight:600;">
+      {projection['overall_progress_pct']:.1f}% Funded (${projection['total_funded_usd']:,.2f} / ${projection['total_target_usd']:,.0f})
+    </div>
+    <div style="color:rgba(255,255,255,0.65);">
+      ${projection['total_remaining_usd']:,.2f} USDT remaining (UGX {projection['total_remaining_ugx']:,.0f})
+    </div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+    # Individual Goal Cards
+    badge_styles = {
+        "READY NOW": ("#10b981", "✅ READY NOW"),
+        "FUNDING": ("#38bdf8", "⚡ FUNDING"),
+        "QUEUED": ("#a78bfa", "⏳ QUEUED"),
+        "OWNED": ("#10b981", "🏆 OWNED"),
+    }
+
+    for item in projection["items"]:
+        accent = item["accent"]
+        state_color, state_label = badge_styles.get(item["funding_state"], ("#a78bfa", item["funding_state"]))
+        rank_badge = "✓" if item["status"] == "purchased" else f"#{item['priority']}"
+        safe_icon = html.escape(item["icon"])
+        safe_name = html.escape(item["name"])
+        safe_notes = html.escape(item["notes"])
+
+        if item["status"] == "purchased":
+            eta_chip = "🏆 Purchased"
+            right_footer = "Completed & removed from active target"
+        elif item["days_away"] == 0:
+            eta_chip = "🟢 Ready now!"
+            right_footer = "$0.00 remaining"
+        else:
+            days_txt = f" · {item['days_away']}d" if item["days_away"] is not None else ""
+            eta_chip = f"📅 Est. {html.escape(item['eta_label'])}{days_txt}"
+            if alloc_mode_key == "waterfall" and item["funding_state"] == "QUEUED":
+                right_footer = f"Queued · ${item['cumulative_remaining_usd']:,.0f} cumulative remaining"
+            else:
+                right_footer = f"${item['remaining_usd']:,.2f} remaining (UGX {item['remaining_ugx']:,.0f})"
+
+        notes_html = (
+            f"<div style='color:rgba(255,255,255,0.5); font-size:0.82rem; margin-top:4px;'>{safe_notes}</div>"
+            if safe_notes else ""
+        )
+
+        st.markdown(f"""
+<div style="
+  background: rgba(255,255,255,0.035);
+  border: 1px solid {accent}38;
+  border-left: 4px solid {accent};
+  border-radius: 16px; padding: 18px 22px;
+  margin-bottom: 12px;
+">
+  <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:10px; margin-bottom:12px;">
+    <div>
+      <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+        <span style="
+          background: {accent}25; color: {accent};
+          border: 1px solid {accent}50;
+          padding: 2px 9px; border-radius: 8px;
+          font-family:'Space Grotesk',sans-serif; font-size:0.75rem; font-weight:700;
+        ">{rank_badge}</span>
+        <span style="color:white; font-family:'Space Grotesk',sans-serif; font-size:1.2rem; font-weight:700;">
+          {safe_icon} {safe_name}
+        </span>
+        <span style="
+          background: {state_color}20; color: {state_color};
+          padding: 2px 9px; border-radius: 8px;
+          font-family:'Space Grotesk',sans-serif; font-size:0.7rem; font-weight:700; letter-spacing:0.5px;
+        ">{state_label}</span>
+      </div>
+      {notes_html}
+    </div>
+    <div style="text-align:right;">
+      <div style="color:{accent}; font-family:'Space Grotesk',sans-serif; font-size:1.25rem; font-weight:800;">
+        ${item['target_usd']:,.0f} USDT
+      </div>
+      <div style="color:rgba(255,255,255,0.5); font-size:0.8rem;">
+        UGX {item['target_ugx']:,.0f} &nbsp;·&nbsp; <span style="color:rgba(255,255,255,0.85); font-weight:600;">{eta_chip}</span>
+      </div>
+    </div>
+  </div>
+  <div style="width:100%; height:9px; background:rgba(0,0,0,0.35); border-radius:5px; overflow:hidden;">
+    <div style="width:{item['progress_pct']}%; height:100%; background:linear-gradient(90deg, {accent}, #8b5cf6); border-radius:5px; box-shadow:0 0 8px {accent}70; transition:width 0.8s ease-out;"></div>
+  </div>
+  <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px; margin-top:9px; font-size:0.83rem;">
+    <div style="color:white; font-weight:600;">
+      {item['progress_pct']:.1f}% Funded (${item['allocated_usd']:,.2f} / ${item['target_usd']:,.0f})
+    </div>
+    <div style="color:rgba(255,255,255,0.6);">
+      {right_footer}
+    </div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+    st.caption(
+        f"Payroll assumptions: UCU Lab Tech net ≈ ${projection['ucu_lab_monthly_usdt']:,.2f}/mo on the 23rd "
+        f"· CazzyGames allocation ${extra_cazzy_save:,.0f}/mo on the 28th "
+        f"· Pending UCU receivables net ≈ ${projection['pending_ucu_net_usd']:,.2f}."
+    )
+
+    with st.expander("⚙️ Manage Wishlist Goals (Edit / Reorder / Add)"):
+        current_goals = st.session_state["hardware_goals"]
+        edited_goals = []
+        for idx, g in enumerate(current_goals):
+            gid = g["id"]
+            e1, e2, e3, e4, e5, e6 = st.columns([0.65, 1.7, 1.0, 1.0, 1.9, 0.55])
+            with e1:
+                g_prio = st.number_input("Prio", min_value=1, max_value=99, value=int(g["priority"]), step=1, key=f"g_prio_{gid}_{idx}")
+            with e2:
+                g_name = st.text_input("Item", value=g["name"], key=f"g_name_{gid}_{idx}")
+            with e3:
+                g_target = st.number_input("Target (USD)", min_value=0.0, value=float(g["target_usd"]), step=25.0, key=f"g_tgt_{gid}_{idx}")
+            with e4:
+                g_status = st.selectbox(
+                    "Status",
+                    ["active", "purchased"],
+                    index=0 if g["status"] == "active" else 1,
+                    key=f"g_stat_{gid}_{idx}",
+                )
+            with e5:
+                g_notes = st.text_input("Notes", value=g.get("notes", ""), key=f"g_notes_{gid}_{idx}")
+            with e6:
+                st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+                g_del = st.checkbox("Del", value=False, key=f"g_del_{gid}_{idx}")
+
+            if not g_del and g_name.strip():
+                edited_goals.append({
+                    **g,
+                    "priority": int(g_prio),
+                    "name": g_name.strip(),
+                    "target_usd": float(g_target),
+                    "status": g_status,
+                    "notes": g_notes.strip(),
+                })
+
+        b1, b2 = st.columns([1, 1])
+        with b1:
+            if st.button("💾 Save Wishlist Changes", key="btn_save_goals", use_container_width=True):
+                if edited_goals:
+                    st.session_state["hardware_goals"] = mgr.save_goals(edited_goals)
+                    st.success("Hardware wishlist updated!")
+                    st.rerun()
+                else:
+                    st.warning("Keep at least one goal, or add a new one below.")
+        with b2:
+            if st.button("↺ Reset to PS5 Pro / Pixel 11 / RTX 5080", key="btn_reset_goals", use_container_width=True):
+                st.session_state["hardware_goals"] = mgr.save_goals(copy.deepcopy(DEFAULT_HARDWARE_GOALS))
+                st.success("Wishlist reset to defaults!")
+                st.rerun()
+
+        st.markdown("---")
+        st.markdown("**➕ Add New Hardware Goal**")
+        n1, n2, n3, n4 = st.columns([0.7, 1.8, 1.0, 0.8])
+        with n1:
+            new_icon = st.selectbox("Icon", ["🎮", "📱", "🖥️", "💻", "🎧", "⌨️", "📺", "⚡", "🎯"], key="new_goal_icon")
+        with n2:
+            new_name = st.text_input("Item Name", placeholder="e.g. GTA VI / 1000W PSU / RTX 4070 Laptop", key="new_goal_name")
+        with n3:
+            new_target = st.number_input("Target (USD)", min_value=0.0, value=100.0, step=25.0, key="new_goal_target")
+        with n4:
+            new_prio = st.number_input("Priority", min_value=1, max_value=99, value=len(current_goals) + 1, step=1, key="new_goal_prio")
+        new_notes = st.text_input("Notes (optional)", placeholder="e.g. Uganda shipping estimate or preferred retailer", key="new_goal_notes")
+
+        if st.button("Add Goal to Wishlist", key="btn_add_goal"):
+            if new_name.strip() and new_target > 0:
+                slug = re.sub(r"[^a-z0-9]+", "-", new_name.strip().lower()).strip("-") or "goal"
+                updated = list(current_goals) + [{
+                    "id": slug,
+                    "priority": int(new_prio),
+                    "icon": new_icon,
+                    "name": new_name.strip(),
+                    "target_usd": float(new_target),
+                    "accent": GOAL_ACCENT_PALETTE[len(current_goals) % len(GOAL_ACCENT_PALETTE)],
+                    "status": "active",
+                    "notes": new_notes.strip(),
+                }]
+                st.session_state["hardware_goals"] = mgr.save_goals(updated)
+                st.success(f"Added {new_name.strip()} to your wishlist!")
+                st.rerun()
+            else:
+                st.warning("Enter an item name and a target price greater than $0.")
+
+    st.markdown("<br>", unsafe_allow_html=True)
 
 
     if not savings_df.empty and savings_df["Amount_USDT"].sum() > 0:

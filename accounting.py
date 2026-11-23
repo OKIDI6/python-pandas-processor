@@ -1,7 +1,8 @@
 import copy
-from datetime import date
+from datetime import date, datetime
 import json
 import os
+import statistics
 import requests
 from typing import Dict, Any, List, Optional
 
@@ -9,13 +10,105 @@ import pandas as pd
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 
-def get_live_ugx_rate(default_rate: float = 3680.0) -> float:
-    try:
-        response = requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=5)
-        response.raise_for_status()
-        return float(response.json().get("rates", {}).get("UGX", default_rate))
-    except Exception:
-        return default_rate
+DEFAULT_UGX_RATE = 3879.0
+
+
+def get_binance_p2p_ugx_rate(timeout: int = 5) -> Optional[float]:
+    """Fetch median top-5 Binance P2P SELL USDT -> UGX rate (actual crypto cash-out rate)."""
+    url = "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
+    headers = {
+        "Accept": "*/*",
+        "Content-Type": "application/json",
+        "Origin": "https://p2p.binance.com",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        ),
+    }
+    for merchant_only in (True, False):
+        payload = {
+            "asset": "USDT",
+            "fiat": "UGX",
+            "merchantCheck": merchant_only,
+            "page": 1,
+            "payTypes": [],
+            "publisherType": None,
+            "rows": 5,
+            "tradeType": "SELL",
+            "transAmount": "",
+        }
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
+            resp.raise_for_status()
+            ads = resp.json().get("data") or []
+            prices = []
+            for ad in ads:
+                raw_price = (ad.get("adv") or {}).get("price")
+                try:
+                    price = float(raw_price)
+                except (TypeError, ValueError):
+                    continue
+                if price > 1000.0:
+                    prices.append(price)
+            if prices:
+                return round(float(statistics.median(prices)), 2)
+        except Exception:
+            return None
+    return None
+
+
+def get_interbank_ugx_rate(timeout: int = 5) -> Optional[float]:
+    """Fetch live interbank USD -> UGX mid-market rate with automatic endpoint fallback."""
+    endpoints = (
+        "https://open.er-api.com/v6/latest/USD",
+        "https://api.exchangerate-api.com/v4/latest/USD",
+    )
+    for url in endpoints:
+        try:
+            response = requests.get(url, timeout=timeout)
+            response.raise_for_status()
+            rate = float(response.json().get("rates", {}).get("UGX", 0.0))
+            if rate > 1000.0:
+                return round(rate, 2)
+        except Exception:
+            continue
+    return None
+
+
+def get_live_ugx_rates(default_rate: float = DEFAULT_UGX_RATE) -> Dict[str, Any]:
+    """
+    Fetch both Binance P2P (Sell USDT -> UGX) and Interbank USD/UGX live rates.
+    Prefers Binance P2P when reachable, falling back cleanly to Interbank, then default_rate.
+    """
+    binance_rate = get_binance_p2p_ugx_rate()
+    interbank_rate = get_interbank_ugx_rate()
+
+    if binance_rate is not None:
+        active_rate = binance_rate
+        active_source = "Binance P2P (Sell USDT)"
+    elif interbank_rate is not None:
+        active_rate = interbank_rate
+        active_source = "Interbank Mid-Market"
+    else:
+        active_rate = float(default_rate)
+        active_source = "Fallback Default"
+
+    spread_pct = None
+    if binance_rate is not None and interbank_rate is not None and interbank_rate > 0:
+        spread_pct = round(((binance_rate - interbank_rate) / interbank_rate) * 100.0, 2)
+
+    return {
+        "active_rate": active_rate,
+        "active_source": active_source,
+        "binance_p2p_rate": binance_rate,
+        "interbank_rate": interbank_rate,
+        "spread_pct": spread_pct,
+        "fetched_at": datetime.now().strftime("%H:%M:%S"),
+    }
+
+
+def get_live_ugx_rate(default_rate: float = DEFAULT_UGX_RATE) -> float:
+    return float(get_live_ugx_rates(default_rate=default_rate)["active_rate"])
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -71,6 +164,19 @@ PAYROLL_SCHEDULE = {
     }
 }
 
+RENT_SCHEDULE = {
+    "due_day": 25,
+    "monthly_ugx": 500000.0,
+    "description": "House rent due on the 25th of every month (UGX 500,000)",
+}
+
+DEBTORS_FILE = os.path.join(BASE_DIR, "debtors_ledger.csv")
+
+# Kept empty in source code so no personal debtor PII is ever committed to Git.
+# Live debtor records are stored exclusively in the private Google Sheet ("Debtors" tab)
+# or gitignored local debtors_ledger.csv.
+DEFAULT_DEBTORS: List[Dict[str, Any]] = []
+
 UCU_CATEGORIES = {
     "Electronics_Lab_Technician_Graduate_Intern",
     "UCU_Tutorial_Assistant",
@@ -78,7 +184,23 @@ UCU_CATEGORIES = {
     "UCU_Teaching_Assistant",
 }
 
+CAZZYGAMES_CATEGORIES = {
+    "Base Pay",
+    "Overtime",
+    "Reimbursement",
+}
+
 UCU_LAB_MONTHLY_GROSS_UGX = 1269062.0
+UCU_LAB_MONTHLY_NET_UGX = 936640.0
+
+
+def is_cazzygames_income(category: str) -> bool:
+    if not isinstance(category, str):
+        return False
+    cat = category.strip()
+    if is_ucu_income(cat):
+        return False
+    return cat in CAZZYGAMES_CATEGORIES or "CAZZY" in cat.upper()
 
 GOALS_FILE = os.path.join(BASE_DIR, "hardware_goals.json")
 
@@ -188,50 +310,57 @@ def _next_day_of_month(as_of: date, day: int) -> date:
 def project_hardware_goals(
     goals: List[Dict[str, Any]],
     current_savings_usdt: float,
-    ugx_rate: float = 3680.0,
+    ugx_rate: float = DEFAULT_UGX_RATE,
     income_df: Optional[pd.DataFrame] = None,
-    include_ucu_lab_monthly: bool = True,
-    include_pending_ucu: bool = True,
-    extra_cazzy_monthly_usdt: float = 250.0,
+    include_ucu_lab_monthly: bool = False,
+    include_pending_ucu: bool = False,
+    extra_cazzy_monthly_usdt: float = 1000.0,
     allocation_mode: str = "waterfall",
     as_of: Optional[date] = None,
 ) -> Dict[str, Any]:
     """
     Compute funded progress and payroll-scheduled ETAs for a multi-goal hardware wishlist.
 
-    Uses actual payroll days from PAYROLL_SCHEDULE:
-      - UCU Lab Tech net auto-savings on the 23rd of each month
-      - CazzyGames discretionary savings allocation on the 28th of each month
-      - Pending UCU receivables (net of Uganda taxes) from income_df on their due date or next UCU payday
+    Operating Model (Stanbic Lives · CazzyGames Saves):
+      - CazzyGames USDT retainer ($1,000/mo default) lands on the 28th -> Savings / Hardware Vault
+      - UCU / Stanbic inflows (23rd Lab Tech + TA) fund living & rent (25th) by default,
+        with optional toggles if the user wants to model routing UCU into hardware.
     """
     today = as_of or date.today()
-    rate = float(ugx_rate) if ugx_rate and ugx_rate > 0 else 3680.0
+    rate = float(ugx_rate) if ugx_rate and ugx_rate > 0 else DEFAULT_UGX_RATE
     savings_pool = max(0.0, float(current_savings_usdt))
     normalized = normalize_goals(goals)
 
     ucu_pay_day = int(PAYROLL_SCHEDULE["UCU"]["payout_day"])
     cazzy_pay_day = min(28, int(PAYROLL_SCHEDULE["CazzyGames"]["payout_end_day"]))
 
-    ucu_lab_net_ugx = calculate_uganda_tax(UCU_LAB_MONTHLY_GROSS_UGX)["net"]
-    ucu_lab_monthly_usdt = round(ucu_lab_net_ugx / rate, 2)
+    ucu_lab_monthly_usdt = round(UCU_LAB_MONTHLY_NET_UGX / rate, 2)
     recurring_ucu = ucu_lab_monthly_usdt if include_ucu_lab_monthly else 0.0
     recurring_cazzy = max(0.0, float(extra_cazzy_monthly_usdt))
     monthly_run_rate_usd = round(recurring_ucu + recurring_cazzy, 2)
 
-    # Collect pending UCU net receivables and already-received Lab Tech months from income_df
+    # Collect pending UCU net receivables and already-received months from income_df
     next_ucu_payday = _next_day_of_month(today, ucu_pay_day)
     pending_events: List[tuple] = []
     pending_ucu_net_usd = 0.0
     received_lab_months = set()
+    received_cazzy_months = set()
     if income_df is not None and not income_df.empty and "Category" in income_df.columns:
-        ucu_mask = income_df["Category"].apply(is_ucu_income)
-        for _, row in income_df[ucu_mask].iterrows():
+        for _, row in income_df.iterrows():
             cat_str = str(row.get("Category", ""))
             parsed = pd.to_datetime(row.get("Date"), errors="coerce")
             try:
                 received_usdt = float(row.get("Received_USDT", 0.0) or 0.0)
             except (TypeError, ValueError):
                 received_usdt = 0.0
+
+            if is_cazzygames_income(cat_str) and "BASE" in cat_str.upper() and received_usdt > 0 and pd.notna(parsed):
+                received_cazzy_months.add((parsed.year, parsed.month))
+                continue
+
+            if not is_ucu_income(cat_str):
+                continue
+
             if received_usdt > 0 and "LAB" in cat_str.upper() and pd.notna(parsed):
                 received_lab_months.add((parsed.year, parsed.month))
 
@@ -268,7 +397,7 @@ def project_hardware_goals(
             d_ucu = date(yr, mo, ucu_pay_day)
             if d_ucu >= today:
                 inflows_by_date[d_ucu] = inflows_by_date.get(d_ucu, 0.0) + recurring_ucu
-        if recurring_cazzy > 0:
+        if recurring_cazzy > 0 and (yr, mo) not in received_cazzy_months:
             d_cazzy = date(yr, mo, cazzy_pay_day)
             if d_cazzy >= today:
                 inflows_by_date[d_cazzy] = inflows_by_date.get(d_cazzy, 0.0) + recurring_cazzy
@@ -496,7 +625,7 @@ class LedgerManager:
                 pass
         return pd.DataFrame(columns=["Date", "Category", "Description", "Amount_UGX", "Notes"])
 
-    def load_savings(self, ugx_rate: float = 3680.0) -> pd.DataFrame:
+    def load_savings(self, ugx_rate: float = DEFAULT_UGX_RATE) -> pd.DataFrame:
         loaded = False
         df = pd.DataFrame(columns=["Date", "Description", "Amount_USDT", "Amount_UGX", "Notes"])
         if self.conn:
@@ -519,33 +648,27 @@ class LedgerManager:
                 except Exception:
                     df = pd.DataFrame(columns=["Date", "Description", "Amount_USDT", "Amount_UGX", "Notes"])
 
-        # Auto-route UCU wages (Lab Tech & Tutorial Assistant) directly into savings when received
+        # Auto-route CazzyGames USDT payouts directly into Savings Vault;
+        # UCU / Stanbic Bank inflows remain 100% available for living & rent.
         income_df = self.load_income()
         if not income_df.empty:
-            ucu_mask = income_df["Category"].apply(is_ucu_income)
-            ucu_rows = income_df[ucu_mask]
+            cazzy_mask = income_df["Category"].apply(is_cazzygames_income)
+            cazzy_rows = income_df[cazzy_mask]
             auto_savings = []
-            for _, row in ucu_rows.iterrows():
+            for _, row in cazzy_rows.iterrows():
                 if row["Received_USDT"] > 0:
-                    gross_ugx = row["Received_USDT"] * ugx_rate
-                    tax_info = calculate_uganda_tax(gross_ugx)
-                    net_ugx = tax_info["net"]
-                    net_usdt = net_ugx / ugx_rate
-                    desc = "UCU Wage"
-                    if "Lab" in str(row["Category"]):
-                        desc = "UCU Lab Tech Wage"
-                    elif "Tutorial" in str(row["Category"]) or "Teaching" in str(row["Category"]):
-                        desc = "UCU Tutorial Assistant Wage"
+                    amt_usdt = float(row["Received_USDT"])
+                    amt_ugx = round(amt_usdt * ugx_rate, 0)
                     auto_savings.append({
                         "Date": row["Date"],
-                        "Description": f"Auto-Saving: {desc} (Net)",
-                        "Amount_USDT": round(net_usdt, 2),
-                        "Amount_UGX": round(net_ugx, 0),
+                        "Description": f"Auto-Saving: CazzyGames ({row['Category']})",
+                        "Amount_USDT": round(amt_usdt, 2),
+                        "Amount_UGX": amt_ugx,
                         "Notes": f"Automatically routed from Income ({row['Description']})"
                     })
             if auto_savings:
                 df = pd.concat([df, pd.DataFrame(auto_savings)], ignore_index=True)
-                
+
         return df
 
     def add_income(self, date: str, category: str, description: str, expected_usd: float, received_usdt: float = 0.0, pending_usd: float = 0.0):
@@ -632,7 +755,74 @@ class LedgerManager:
             pass
         return normalized
 
-    def get_summary(self, ugx_rate: float = 3680.0) -> Dict[str, Any]:
+    def load_debtors(self) -> pd.DataFrame:
+        cols = ["Date", "Debtor", "Phone", "Amount_UGX", "Fee_UGX", "Status", "Notes"]
+        df = None
+        if self.conn:
+            try:
+                sheet_df = self.conn.read(worksheet="Debtors", ttl=60)
+                if sheet_df is not None and not sheet_df.empty and "Debtor" in sheet_df.columns:
+                    df = sheet_df
+            except Exception:
+                pass
+        if df is None and os.path.exists(DEBTORS_FILE):
+            try:
+                df = pd.read_csv(DEBTORS_FILE, dtype={"Phone": str})
+            except Exception:
+                df = None
+        if df is None or df.empty:
+            df = pd.DataFrame(copy.deepcopy(DEFAULT_DEBTORS))
+        for c in cols:
+            if c not in df.columns:
+                df[c] = "" if c in ("Date", "Debtor", "Phone", "Status", "Notes") else 0.0
+        df["Amount_UGX"] = pd.to_numeric(df["Amount_UGX"], errors="coerce").fillna(0.0)
+        df["Fee_UGX"] = pd.to_numeric(df["Fee_UGX"], errors="coerce").fillna(0.0)
+        df["Phone"] = df["Phone"].fillna("").astype(str)
+        df["Notes"] = df["Notes"].fillna("").astype(str)
+        df["Status"] = df["Status"].fillna("Pending").astype(str)
+        return df[cols]
+
+    def _persist_debtors(self, df: pd.DataFrame):
+        if self.conn:
+            try:
+                self.conn.update(worksheet="Debtors", data=df)
+            except Exception:
+                pass
+        try:
+            df.to_csv(DEBTORS_FILE, index=False)
+        except Exception:
+            pass
+
+    def add_debtor(
+        self,
+        date_str: str,
+        debtor: str,
+        amount_ugx: float,
+        phone: str = "",
+        fee_ugx: float = 0.0,
+        status: str = "Pending",
+        notes: str = "",
+    ):
+        df = self.load_debtors()
+        new_row = pd.DataFrame([{
+            "Date": date_str,
+            "Debtor": debtor.strip(),
+            "Phone": phone.strip(),
+            "Amount_UGX": float(amount_ugx),
+            "Fee_UGX": float(fee_ugx),
+            "Status": status,
+            "Notes": notes.strip(),
+        }])
+        df = pd.concat([df, new_row], ignore_index=True)
+        self._persist_debtors(df)
+
+    def mark_debtor_settled(self, row_idx: int):
+        df = self.load_debtors()
+        if 0 <= row_idx < len(df):
+            df.loc[row_idx, "Status"] = "Paid"
+            self._persist_debtors(df)
+
+    def get_summary(self, ugx_rate: float = DEFAULT_UGX_RATE) -> Dict[str, Any]:
         income_df = self.load_income()
         expenses_df = self.load_expenses()
         savings_df = self.load_savings(ugx_rate=ugx_rate)

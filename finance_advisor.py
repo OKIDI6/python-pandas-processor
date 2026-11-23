@@ -322,14 +322,26 @@ def generate_financial_insights(
             "action": f"You have ${pending_usd:,.2f} USD pending. Follow up to accelerate collection.",
         })
 
+    stanbic_lab_net_ugx = 936640
+    rent_ugx = 500000
+    stanbic_after_rent_ugx = stanbic_lab_net_ugx - rent_ugx
+    cazzy_vault_ugx = round(1000 * ugx_rate)
+    stanbic_over = burn_rate["monthly_projected_ugx"] > stanbic_lab_net_ugx
+
     recommendations.append({
-        "priority": "P1",
-        "title": "Cycle Budget: 50% CazzyGames Spend & Jumia Scenario",
+        "priority": "P0" if stanbic_over else "P1",
+        "title": "Operating Rule: Stanbic-Only Living · 100% CazzyGames Savings",
         "action": (
-            "Scenario A (Active): 50% CazzyGames spend allocation = UGX 1,840,000. "
-            "Total Shopping / Tech is capped at UGX 800,000 (covers the ~628k Jumia order + ~170k buffer). "
-            "Cash remaining for living = UGX 1,040,000 with UGX 0 rent due (pre-paid 3 months advance through end of Nov). "
-            "Daily allowance > UGX 34,000/day for food and movement. Status: Comfortable and safe."
+            f"Stanbic Living Pool = UGX {stanbic_lab_net_ugx:,}/mo (UCU Lab Tech net on 23rd) minus "
+            f"UGX {rent_ugx:,} Rent (due 25th) = UGX {stanbic_after_rent_ugx:,}/mo (~UGX {stanbic_after_rent_ugx // 30:,}/day) "
+            f"before UCU TA supplements (+~UGX 577k/mo net during semester). "
+            f"100% of CazzyGames ($1,000+/mo ≈ UGX {cazzy_vault_ugx:,}) stays locked in Binance Savings. "
+            + (
+                f"ALERT: Current projected burn (UGX {burn_rate['monthly_projected_ugx']:,}/mo) exceeds Stanbic-only inflow — "
+                f"pay supermarkets/utilities directly by Stanbic Card (UGX 0 fee) and cap cash/transfers tightly."
+                if stanbic_over
+                else "Current spending pace fits inside your Stanbic living envelope."
+            )
         ),
     })
 

@@ -1,5 +1,6 @@
 import copy
 import html
+import math
 import re
 import streamlit as st
 import pandas as pd
@@ -18,6 +19,7 @@ from accounting import (
     DEFAULT_HARDWARE_GOALS,
     GOAL_ACCENT_PALETTE,
     get_live_ugx_rate,
+    get_live_ugx_rates,
     project_hardware_goals,
 )
 from finance_advisor import generate_financial_insights
@@ -340,21 +342,96 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
 
-    @st.cache_data(ttl=3600)
-    def fetch_live_rate():
-        return get_live_ugx_rate()
-        
-    live_rate = fetch_live_rate()
+    @st.cache_data(ttl=300)
+    def fetch_live_rates():
+        return get_live_ugx_rates()
+
+    def _resolve_source_rate(rates_dict, preferred_source):
+        if preferred_source == "Binance P2P (Sell USDT)" and rates_dict.get("binance_p2p_rate"):
+            return float(rates_dict["binance_p2p_rate"]), "Binance P2P (Sell USDT)"
+        if preferred_source == "Interbank Mid-Market" and rates_dict.get("interbank_rate"):
+            return float(rates_dict["interbank_rate"]), "Interbank Mid-Market"
+        return float(rates_dict["active_rate"]), str(rates_dict["active_source"])
+
+    rates_info = fetch_live_rates()
+
+    rate_source_choice = st.selectbox(
+        "FX Rate Source",
+        ["Binance P2P (Sell USDT)", "Interbank Mid-Market"],
+        key="fx_rate_source",
+        help="Binance P2P reflects real USDT->UGX cash-out; automatically falls back to Interbank if unreachable.",
+    )
+    resolved_live_rate, effective_source = _resolve_source_rate(rates_info, rate_source_choice)
+
+    sync_c1, sync_c2 = st.columns([1.3, 1.0])
+    with sync_c1:
+        auto_sync_fx = st.checkbox(
+            "Auto-sync (5m)",
+            value=True,
+            key="auto_sync_fx",
+            help="Automatically refreshes every 5 minutes and updates all figures whenever the live rate changes.",
+        )
+    with sync_c2:
+        if st.button("🔄 Refresh", key="btn_refresh_fx", use_container_width=True):
+            fetch_live_rates.clear()
+            st.session_state.pop("last_synced_live_rate", None)
+            st.rerun()
+
+    pending_sync = st.session_state.pop("pending_fx_sync", None)
+    if pending_sync is not None:
+        resolved_live_rate = float(pending_sync)
+
+    source_changed = st.session_state.get("last_fx_source") != rate_source_choice
+    prev_synced = st.session_state.get("last_synced_live_rate")
+    live_rate_changed = prev_synced is None or abs(resolved_live_rate - float(prev_synced)) >= 1.0
+
+    if (
+        "ugx_rate_slider" not in st.session_state
+        or pending_sync is not None
+        or source_changed
+        or (auto_sync_fx and live_rate_changed)
+    ):
+        st.session_state["ugx_rate_slider"] = float(round(resolved_live_rate))
+        st.session_state["last_synced_live_rate"] = resolved_live_rate
+        st.session_state["last_fx_source"] = rate_source_choice
+
+    anchor_rates = [resolved_live_rate, float(st.session_state["ugx_rate_slider"])]
+    slider_min = float(min(3200.0, math.floor((min(anchor_rates) - 400.0) / 100.0) * 100.0))
+    slider_max = float(max(5000.0, math.ceil((max(anchor_rates) + 400.0) / 100.0) * 100.0))
+    st.session_state["ugx_rate_slider"] = max(slider_min, min(slider_max, float(st.session_state["ugx_rate_slider"])))
 
     ugx_rate = st.slider(
         "Live UGX Rate (per 1 USDT)",
-        min_value=3500.0,
-        max_value=4200.0,
-        value=float(live_rate),
-        step=10.0,
-        help="Pulled automatically via API. Adjust this if Binance P2P rate differs."
+        min_value=slider_min,
+        max_value=slider_max,
+        step=1.0,
+        key="ugx_rate_slider",
+        help="Auto-synced from the live feed above. Drag to manually override for a specific P2P quote.",
     )
-    st.caption(f"Current rate: **1 USDT = {ugx_rate:,.0f} UGX**")
+
+    @st.fragment(run_every="5m")
+    def _auto_fx_watcher():
+        if not st.session_state.get("auto_sync_fx", True):
+            return
+        fresh_rates = fetch_live_rates()
+        chosen_src = st.session_state.get("fx_rate_source", "Binance P2P (Sell USDT)")
+        fresh_rate, _ = _resolve_source_rate(fresh_rates, chosen_src)
+        last_rate = st.session_state.get("last_synced_live_rate")
+        if last_rate is not None and abs(fresh_rate - float(last_rate)) >= 1.0:
+            st.session_state["pending_fx_sync"] = fresh_rate
+            st.rerun(scope="app")
+
+    _auto_fx_watcher()
+
+    rate_details = [f"Active: **1 USDT = {ugx_rate:,.0f} UGX**", f"Source: **{effective_source}** ({rates_info['fetched_at']})"]
+    if rates_info.get("binance_p2p_rate") and rates_info.get("interbank_rate"):
+        spread_txt = f" ({rates_info['spread_pct']:+.1f}%)" if rates_info.get("spread_pct") is not None else ""
+        rate_details.append(
+            f"Binance P2P: **{rates_info['binance_p2p_rate']:,.0f}** · Interbank: **{rates_info['interbank_rate']:,.0f}**{spread_txt}"
+        )
+    elif rates_info.get("interbank_rate") and effective_source == "Interbank Mid-Market" and rate_source_choice == "Binance P2P (Sell USDT)":
+        rate_details.append("Binance P2P unavailable from host; using Interbank live rate.")
+    st.caption("  \n".join(rate_details))
 
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown(f"""
@@ -390,10 +467,11 @@ with st.sidebar:
     st.markdown("""
     <div style="font-family:'Space Grotesk',sans-serif; font-size:1rem; font-weight:600; 
                 color:rgba(255,255,255,0.7); margin-bottom:12px;">
-      📅 Payroll Schedule
+      📅 Payroll & Rent Schedule
     </div>
     """, unsafe_allow_html=True)
     st.caption("• **UCU:** 23rd of every month\n  *(Lab Tech & Teaching)*")
+    st.caption("• **House Rent:** 25th of every month\n  *(UGX 500,000)*")
     st.caption("• **CazzyGames:** 26th – 29th of every month\n  *(Retainer Base & Overtime)*")
 
 # ─── LOAD DATA ───────────────────────────────────────────────────────────────
@@ -616,6 +694,79 @@ with tab2:
     else:
         st.info("No income records yet.")
 
+    # ─── DEBTORS & PERSONAL LOANS OWED TO YOU ───
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("""
+    <div style="font-family:'Space Grotesk',sans-serif; font-size:1.25rem; font-weight:700; color:white; margin-bottom:12px;">
+      🧾 Debtors (Money Owed to You)
+    </div>
+    """, unsafe_allow_html=True)
+
+    with st.expander("➕ Add Debtor / Personal Loan"):
+        dc1, dc2 = st.columns(2)
+        with dc1:
+            deb_date = st.date_input("Date Lent", value=date.today(), key="deb_date")
+            deb_name = st.text_input("Debtor Name", placeholder="e.g. John Doe", key="deb_name")
+            deb_phone = st.text_input("Phone (optional)", placeholder="256...", key="deb_phone")
+        with dc2:
+            deb_amount = st.number_input("Principal Amount (UGX)", min_value=0.0, step=5000.0, key="deb_amt")
+            deb_fee = st.number_input("Transfer / Cash-out Fee (UGX)", min_value=0.0, step=500.0, key="deb_fee")
+            deb_notes = st.text_input("Notes (optional)", placeholder="Reason / due date", key="deb_notes")
+        if st.button("Save Debtor", key="btn_save_debtor"):
+            if deb_name.strip() and deb_amount > 0:
+                mgr.add_debtor(str(deb_date), deb_name, deb_amount, deb_phone, deb_fee, "Pending", deb_notes)
+                st.success(f"Added {deb_name.strip()} to Debtors!")
+                st.rerun()
+            else:
+                st.warning("Enter debtor name and amount greater than 0.")
+
+    debtors_df = mgr.load_debtors()
+    pending_debtors = debtors_df[debtors_df["Status"].str.lower() != "paid"]
+    total_owed_ugx = pending_debtors["Amount_UGX"].sum() if not pending_debtors.empty else 0.0
+
+    dm1, dm2 = st.columns(2)
+    with dm1:
+        st.metric("Outstanding Debtors (UGX)", f"UGX {total_owed_ugx:,.0f}",
+                  delta=f"{len(pending_debtors)} pending" if len(pending_debtors) > 0 else "All settled")
+    with dm2:
+        st.metric("Outstanding Debtors (USDT eq.)", f"${total_owed_ugx / ugx_rate:,.2f}")
+
+    if not pending_debtors.empty:
+        for idx, drow in pending_debtors.iterrows():
+            d_col1, d_col2 = st.columns([4.2, 1.0])
+            with d_col1:
+                phone_bit = f" · {html.escape(str(drow['Phone']))}" if str(drow['Phone']).strip() else ""
+                note_bit = f"<div style='color:rgba(255,255,255,0.5); font-size:0.8rem; margin-top:3px;'>{html.escape(str(drow['Notes']))}</div>" if str(drow['Notes']).strip() else ""
+                st.markdown(f"""
+<div style="
+  background: rgba(245,158,11,0.08);
+  border: 1px solid rgba(245,158,11,0.28);
+  border-left: 4px solid #f59e0b;
+  border-radius: 12px; padding: 12px 16px; margin-bottom: 8px;
+  display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;
+">
+  <div>
+    <div style="color:white; font-family:'Space Grotesk',sans-serif; font-weight:700;">
+      {html.escape(str(drow['Debtor']))}
+      <span style="color:rgba(255,255,255,0.45); font-weight:400; font-size:0.82rem;"> · {html.escape(str(drow['Date']))}{phone_bit}</span>
+    </div>
+    {note_bit}
+  </div>
+  <div style="text-align:right;">
+    <div style="color:#f59e0b; font-family:'Space Grotesk',sans-serif; font-weight:800; font-size:1.1rem;">UGX {float(drow['Amount_UGX']):,.0f}</div>
+    <div style="color:rgba(255,255,255,0.45); font-size:0.78rem;">≈ ${float(drow['Amount_UGX'])/ugx_rate:,.2f} USDT</div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+            with d_col2:
+                st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+                if st.button("✅ Mark Paid", key=f"btn_pay_debtor_{idx}", use_container_width=True):
+                    mgr.mark_debtor_settled(int(idx))
+                    st.success(f"Marked {drow['Debtor']} as Paid!")
+                    st.rerun()
+
+    st.dataframe(debtors_df, use_container_width=True)
+
 
 # ════════════════════════════════════════════════════════════════════
 # TAB 3 — EXPENSES
@@ -732,29 +883,29 @@ with tab4:
         )
     with sim_c2:
         extra_cazzy_save = st.slider(
-            "CazzyGames Allocation / mo (USDT)",
+            "CazzyGames Vault / mo (USDT)",
             min_value=0,
-            max_value=1000,
-            value=250,
+            max_value=1500,
+            value=1000,
             step=50,
             key="goal_cazzy_slider",
-            help="Monthly savings allocated from your CazzyGames retainer (lands 26th–29th).",
+            help="100% of CazzyGames ($1,000 base + optional overtime) goes to Binance Savings on the 26th–29th.",
         )
     with sim_c3:
         st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
         inc_ucu_lab = st.checkbox(
-            "UCU Lab Tech (23rd)",
-            value=True,
+            "Add UCU Lab Tech",
+            value=False,
             key="goal_inc_ucu_lab",
-            help="Include monthly net UCU Lab Tech auto-savings landing on the 23rd.",
+            help="Off by default: Stanbic/UCU inflows fund living & rent (25th), not hardware savings.",
         )
     with sim_c4:
         st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
         inc_pending_ucu = st.checkbox(
-            "Pending UCU TA",
-            value=True,
+            "Add Pending UCU TA",
+            value=False,
             key="goal_inc_pend_ucu",
-            help="Include pending UCU receivables from your Income ledger (net of Uganda tax).",
+            help="Off by default: UCU TA inflows go to Stanbic living buffer rather than hardware savings.",
         )
 
     alloc_mode_key = "independent" if alloc_choice.startswith("Independent") else "waterfall"
@@ -904,9 +1055,8 @@ with tab4:
 """, unsafe_allow_html=True)
 
     st.caption(
-        f"Payroll assumptions: UCU Lab Tech net ≈ ${projection['ucu_lab_monthly_usdt']:,.2f}/mo on the 23rd "
-        f"· CazzyGames allocation ${extra_cazzy_save:,.0f}/mo on the 28th "
-        f"· Pending UCU receivables net ≈ ${projection['pending_ucu_net_usd']:,.2f}."
+        f"Strategy: 100% CazzyGames (${extra_cazzy_save:,.0f}/mo on 28th) → Binance Savings Vault · "
+        f"100% UCU/Stanbic (≈ ${projection['ucu_lab_monthly_usdt']:,.0f}/mo Lab Tech + pending TA ≈ ${projection['pending_ucu_net_usd']:,.0f}) → Living & Rent (due 25th)."
     )
 
     with st.expander("⚙️ Manage Wishlist Goals (Edit / Reorder / Add)"):
@@ -1104,63 +1254,70 @@ with tab5:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── Scenario A Cashflow Analysis Card ──
-    st.markdown("""
-    <div style="
-        background: linear-gradient(135deg, rgba(59, 130, 246, 0.12) 0%, rgba(139, 92, 246, 0.12) 100%);
-        border: 1px solid rgba(59, 130, 246, 0.3);
-        border-radius: 20px;
-        padding: 24px 28px;
-        margin-bottom: 24px;
-        backdrop-filter: blur(16px);
-    ">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; flex-wrap:wrap; gap:8px;">
-            <div style="font-family:'Space Grotesk',sans-serif; font-size:1.15rem; font-weight:700; color:white;">
-                💡 Budget Scenario: 50% CazzyGames Spend & Jumia Order
-            </div>
-            <div style="
-                background: rgba(16, 185, 129, 0.2);
-                border: 1px solid rgba(16, 185, 129, 0.4);
-                border-radius: 8px;
-                padding: 4px 12px;
-                color: #10b981;
-                font-size: 0.8rem;
-                font-weight: 700;
-                font-family:'Space Grotesk',sans-serif;
-            ">
-                ✅ COMFORTABLE & SAFE
-            </div>
+    # ── Active Operating Model Card: Stanbic-Only Living · 100% CazzyGames Savings ──
+    stanbic_lab_net = 936640
+    stanbic_ta_net_mo = 577253
+    monthly_rent = 500000
+    living_base_only = stanbic_lab_net - monthly_rent
+    living_with_ta = stanbic_lab_net + stanbic_ta_net_mo - monthly_rent
+    cazzy_monthly_ugx = round(CONTRACT["post_trial_fee_usd"] * ugx_rate)
+
+    st.markdown(f"""
+<div style="
+    background: linear-gradient(135deg, rgba(16, 185, 129, 0.12) 0%, rgba(59, 130, 246, 0.12) 100%);
+    border: 1px solid rgba(16, 185, 129, 0.32);
+    border-radius: 20px;
+    padding: 24px 28px;
+    margin-bottom: 24px;
+    backdrop-filter: blur(16px);
+">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; flex-wrap:wrap; gap:8px;">
+        <div style="font-family:'Space Grotesk',sans-serif; font-size:1.15rem; font-weight:700; color:white;">
+            🏦 Active Rule: Stanbic-Only Living · 100% CazzyGames Savings
         </div>
-        <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; margin-bottom:16px;">
-            <div style="background:rgba(255,255,255,0.03); padding:12px 16px; border-radius:12px; border:1px solid rgba(255,255,255,0.06);">
-                <div style="color:rgba(255,255,255,0.5); font-size:0.75rem; text-transform:uppercase;">50% Spend Pool</div>
-                <div style="color:#a78bfa; font-size:1.3rem; font-weight:700; font-family:'Space Grotesk',sans-serif;">UGX 1,840,000</div>
-                <div style="color:rgba(255,255,255,0.4); font-size:0.75rem;">50% of $1,000 Retainer</div>
-            </div>
-            <div style="background:rgba(255,255,255,0.03); padding:12px 16px; border-radius:12px; border:1px solid rgba(255,255,255,0.06);">
-                <div style="color:rgba(255,255,255,0.5); font-size:0.75rem; text-transform:uppercase;">Shopping & Tech Budget</div>
-                <div style="color:#f59e0b; font-size:1.3rem; font-weight:700; font-family:'Space Grotesk',sans-serif;">UGX 800,000</div>
-                <div style="color:rgba(255,255,255,0.4); font-size:0.75rem;">~628k Jumia + ~170k buffer</div>
-            </div>
-            <div style="background:rgba(255,255,255,0.03); padding:12px 16px; border-radius:12px; border:1px solid rgba(255,255,255,0.06);">
-                <div style="color:rgba(255,255,255,0.5); font-size:0.75rem; text-transform:uppercase;">Pure Living Cash Left</div>
-                <div style="color:#10b981; font-size:1.3rem; font-weight:700; font-family:'Space Grotesk',sans-serif;">UGX 1,040,000</div>
-                <div style="color:rgba(255,255,255,0.4); font-size:0.75rem;">Rent = UGX 0 (paid to Dec)</div>
-            </div>
-            <div style="background:rgba(255,255,255,0.03); padding:12px 16px; border-radius:12px; border:1px solid rgba(255,255,255,0.06);">
-                <div style="color:rgba(255,255,255,0.5); font-size:0.75rem; text-transform:uppercase;">Daily Allowance</div>
-                <div style="color:#38bdf8; font-size:1.3rem; font-weight:700; font-family:'Space Grotesk',sans-serif;">> UGX 34,000 / day</div>
-                <div style="color:rgba(255,255,255,0.4); font-size:0.75rem;">Food & transport only</div>
-            </div>
-        </div>
-        <div style="color:rgba(255,255,255,0.7); font-size:0.88rem; line-height:1.6; border-top:1px solid rgba(255,255,255,0.08); padding-top:12px;">
-            <b>Daily Living Breakdown (30 Days):</b><br>
-            • Groceries & Food: ≈ UGX 450,000 &nbsp;|&nbsp; • Transport (Boda/Taxi): ≈ UGX 150,000 &nbsp;|&nbsp; • Airtime & Internet: ≈ UGX 100,000<br>
-            • Tithe / Church: ≈ UGX 80,000 &nbsp;|&nbsp; • Emergency Surplus Cushion: ≈ <b>UGX 260,000</b><br>
-            <i>👉 <b>Verdict:</b> Since house rent was pre-paid 3 months in advance on August 31st (covering through end of November), living on UGX 1.04M for food and transport in Mukono/Kampala leaves a healthy surplus with zero stress.</i>
+        <div style="
+            background: rgba(16, 185, 129, 0.2);
+            border: 1px solid rgba(16, 185, 129, 0.4);
+            border-radius: 8px;
+            padding: 4px 12px;
+            color: #10b981;
+            font-size: 0.8rem;
+            font-weight: 700;
+            font-family:'Space Grotesk',sans-serif;
+        ">
+            🔒 100% USDT VAULT LOCKED
         </div>
     </div>
-    """, unsafe_allow_html=True)
+    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; margin-bottom:16px;">
+        <div style="background:rgba(255,255,255,0.03); padding:12px 16px; border-radius:12px; border:1px solid rgba(255,255,255,0.06);">
+            <div style="color:rgba(255,255,255,0.5); font-size:0.75rem; text-transform:uppercase;">Stanbic Base Inflow</div>
+            <div style="color:#a78bfa; font-size:1.3rem; font-weight:700; font-family:'Space Grotesk',sans-serif;">UGX {stanbic_lab_net:,}</div>
+            <div style="color:rgba(255,255,255,0.4); font-size:0.75rem;">UCU Lab Tech Net (23rd) · +577k w/ TA</div>
+        </div>
+        <div style="background:rgba(255,255,255,0.03); padding:12px 16px; border-radius:12px; border:1px solid rgba(255,255,255,0.06);">
+            <div style="color:rgba(255,255,255,0.5); font-size:0.75rem; text-transform:uppercase;">Fixed Rent (Due 25th)</div>
+            <div style="color:#f59e0b; font-size:1.3rem; font-weight:700; font-family:'Space Grotesk',sans-serif;">UGX {monthly_rent:,}</div>
+            <div style="color:rgba(255,255,255,0.4); font-size:0.75rem;">Ring-fenced immediately from 23rd pay</div>
+        </div>
+        <div style="background:rgba(255,255,255,0.03); padding:12px 16px; border-radius:12px; border:1px solid rgba(255,255,255,0.06);">
+            <div style="color:rgba(255,255,255,0.5); font-size:0.75rem; text-transform:uppercase;">Usable Living Cash</div>
+            <div style="color:#38bdf8; font-size:1.3rem; font-weight:700; font-family:'Space Grotesk',sans-serif;">UGX {living_base_only:,}</div>
+            <div style="color:rgba(255,255,255,0.4); font-size:0.75rem;">~UGX {living_base_only // 30:,}/day (or ~UGX {living_with_ta // 30:,}/day w/ TA)</div>
+        </div>
+        <div style="background:rgba(255,255,255,0.03); padding:12px 16px; border-radius:12px; border:1px solid rgba(255,255,255,0.06);">
+            <div style="color:rgba(255,255,255,0.5); font-size:0.75rem; text-transform:uppercase;">CazzyGames Vault (100%)</div>
+            <div style="color:#10b981; font-size:1.3rem; font-weight:700; font-family:'Space Grotesk',sans-serif;">${CONTRACT['post_trial_fee_usd']:,.0f}+ USDT/mo</div>
+            <div style="color:rgba(255,255,255,0.4); font-size:0.75rem;">≈ UGX {cazzy_monthly_ugx:,} saved every month</div>
+        </div>
+    </div>
+    <div style="color:rgba(255,255,255,0.7); font-size:0.88rem; line-height:1.6; border-top:1px solid rgba(255,255,255,0.08); padding-top:12px;">
+        <b>Stanbic-Only Monthly Allocation Target (After UGX 500k Rent):</b><br>
+        • Utilities (Power + Water): ≈ UGX 80,000 &nbsp;|&nbsp; • Internet (Lycamobile): ≈ UGX 43,000 &nbsp;|&nbsp; • Church / Tithe: ≈ UGX 40,000<br>
+        • Groceries &amp; Food (Stanbic Card, 0 fee): ≈ UGX 180,000 &nbsp;|&nbsp; • Transport &amp; Cash Buffer: ≈ <b>UGX 93,640</b> <i>(+UGX 577k/mo when TA pays)</i><br>
+        <i>👉 <b>Strict Guardrail:</b> Pay supermarkets &amp; utilities directly via Stanbic Card/App (UGX 0 fee), avoid Stanbic→MoMo double-hop fees, and keep hardware/big tech purchases strictly in the CazzyGames Vault.</i>
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
     # ── Recommendations ──
     recs = insights["recommendations"]
